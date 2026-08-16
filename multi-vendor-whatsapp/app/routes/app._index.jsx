@@ -148,13 +148,28 @@ export default function Index() {
           entre ellos (round robin).
         </s-paragraph>
 
+        {fetcher.data?.ok && (
+          <s-banner
+            heading={`Guardado: ${fetcher.data.saved.length} vendedor(es) activo(s)`}
+            tone="success"
+          >
+            Los clics del botón de WhatsApp ya se reparten entre estos números.
+          </s-banner>
+        )}
+        {fetcher.data && !fetcher.data.ok && (
+          <s-banner heading="No se pudo guardar" tone="critical">
+            Revisa que cada vendedor tenga nombre y un número válido (mínimo 8
+            dígitos).
+          </s-banner>
+        )}
+
         <s-stack direction="block" gap="base">
           {vendors.map((vendor, index) => (
-            <s-stack
+            <s-grid
               key={index}
-              direction="inline"
+              gridTemplateColumns="1fr 1fr auto"
               gap="base"
-              alignItems="end"
+              alignItems="start"
             >
               <s-text-field
                 label="Nombre"
@@ -169,14 +184,16 @@ export default function Index() {
                 value={vendor.phone}
                 onChange={(e) => updateVendor(index, "phone", e.currentTarget.value)}
               ></s-text-field>
-              <s-button
-                icon="delete"
-                variant="tertiary"
-                tone="critical"
-                accessibilityLabel={`Eliminar vendedor ${index + 1}`}
-                onClick={() => removeVendor(index)}
-              ></s-button>
-            </s-stack>
+              <s-box paddingBlockStart="large">
+                <s-button
+                  icon="delete"
+                  variant="tertiary"
+                  tone="critical"
+                  accessibilityLabel={`Eliminar vendedor ${index + 1}`}
+                  onClick={() => removeVendor(index)}
+                ></s-button>
+              </s-box>
+            </s-grid>
           ))}
         </s-stack>
 
