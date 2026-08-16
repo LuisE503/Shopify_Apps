@@ -89,7 +89,9 @@ export const action = async ({ request }) => {
     },
   );
   const responseJson = await response.json();
-  const errors = responseJson.data.metafieldsSet.userErrors;
+  const errors = responseJson.data?.metafieldsSet?.userErrors ?? [
+    { message: "Respuesta inesperada de la API de Shopify" },
+  ];
 
   return { ok: errors.length === 0, errors, saved: cleanVendors };
 };
@@ -98,9 +100,15 @@ export default function Index() {
   const { vendors: initialVendors } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
-  const [vendors, setVendors] = useState(
-    initialVendors.length > 0 ? initialVendors : [{ name: "", phone: "" }],
-  );
+  // Cada fila lleva un id estable para que React no confunda filas al eliminar
+  const [vendors, setVendors] = useState(() => {
+    const rows = initialVendors.length > 0 ? initialVendors : [{}];
+    return rows.map((v, i) => ({
+      id: i + 1,
+      name: v.name ?? "",
+      phone: v.phone ?? "",
+    }));
+  });
   const isSaving =
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formMethod === "POST";
@@ -116,20 +124,34 @@ export default function Index() {
     }
   }, [fetcher.data, shopify]);
 
-  const updateVendor = (index, field, value) => {
+  const updateVendor = (id, field, value) => {
     setVendors((current) =>
-      current.map((v, i) => (i === index ? { ...v, [field]: value } : v)),
+      current.map((v) => (v.id === id ? { ...v, [field]: value } : v)),
     );
   };
 
   const addVendor = () =>
-    setVendors((current) => [...current, { name: "", phone: "" }]);
+    setVendors((current) => [
+      ...current,
+      {
+        id: Math.max(0, ...current.map((v) => v.id)) + 1,
+        name: "",
+        phone: "",
+      },
+    ]);
 
-  const removeVendor = (index) =>
-    setVendors((current) => current.filter((_, i) => i !== index));
+  const removeVendor = (id) =>
+    setVendors((current) => current.filter((v) => v.id !== id));
 
   const saveVendors = () =>
-    fetcher.submit({ vendors: JSON.stringify(vendors) }, { method: "POST" });
+    fetcher.submit(
+      {
+        vendors: JSON.stringify(
+          vendors.map(({ name, phone }) => ({ name, phone })),
+        ),
+      },
+      { method: "POST" },
+    );
 
   return (
     <s-page heading="Multi-Vendor WhatsApp Router">
@@ -164,9 +186,9 @@ export default function Index() {
         )}
 
         <s-stack direction="block" gap="base">
-          {vendors.map((vendor, index) => (
+          {vendors.map((vendor) => (
             <s-grid
-              key={index}
+              key={vendor.id}
               gridTemplateColumns="1fr 1fr auto"
               gap="base"
               alignItems="start"
@@ -175,22 +197,26 @@ export default function Index() {
                 label="Nombre"
                 placeholder="Ej: María"
                 value={vendor.name}
-                onChange={(e) => updateVendor(index, "name", e.currentTarget.value)}
+                onChange={(e) =>
+                  updateVendor(vendor.id, "name", e.currentTarget.value)
+                }
               ></s-text-field>
               <s-text-field
                 label="Número de WhatsApp"
                 placeholder="Ej: 50371234567"
                 details="Código de país + número, solo dígitos"
                 value={vendor.phone}
-                onChange={(e) => updateVendor(index, "phone", e.currentTarget.value)}
+                onChange={(e) =>
+                  updateVendor(vendor.id, "phone", e.currentTarget.value)
+                }
               ></s-text-field>
               <s-box paddingBlockStart="large">
                 <s-button
                   icon="delete"
                   variant="tertiary"
                   tone="critical"
-                  accessibilityLabel={`Eliminar vendedor ${index + 1}`}
-                  onClick={() => removeVendor(index)}
+                  accessibilityLabel={`Eliminar vendedor ${vendor.name || "sin nombre"}`}
+                  onClick={() => removeVendor(vendor.id)}
                 ></s-button>
               </s-box>
             </s-grid>
