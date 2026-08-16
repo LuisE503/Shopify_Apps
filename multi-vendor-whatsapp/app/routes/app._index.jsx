@@ -1,332 +1,211 @@
-import { useEffect } from "react";
-import { useFetcher } from "react-router";
+import { useState, useEffect } from "react";
+import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 
-export const loader = async ({ request }) => {
-  await authenticate.admin(request);
+// Los números se guardan como app-data metafield (JSON) para que la
+// Theme App Extension pueda leerlos desde Liquid sin llamadas al backend.
+const METAFIELD_NAMESPACE = "whatsapp_router";
+const METAFIELD_KEY = "vendors";
 
-  return null;
+export const loader = async ({ request }) => {
+  const { admin } = await authenticate.admin(request);
+
+  const response = await admin.graphql(
+    `#graphql
+      query getVendors($namespace: String!, $key: String!) {
+        currentAppInstallation {
+          vendors: metafield(namespace: $namespace, key: $key) {
+            jsonValue
+          }
+        }
+      }`,
+    { variables: { namespace: METAFIELD_NAMESPACE, key: METAFIELD_KEY } },
+  );
+  const responseJson = await response.json();
+
+  return {
+    vendors: responseJson.data.currentAppInstallation.vendors?.jsonValue ?? [],
+  };
 };
 
 export const action = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
+  const formData = await request.formData();
+
+  let vendors;
+  try {
+    vendors = JSON.parse(formData.get("vendors"));
+  } catch {
+    return { ok: false, errors: [{ message: "Datos inválidos" }] };
+  }
+
+  // Normaliza: nombre sin espacios sobrantes, teléfono solo dígitos
+  // (formato wa.me: código de país + número, sin "+" ni espacios)
+  const cleanVendors = vendors
+    .map((v) => ({
+      name: String(v.name ?? "").trim(),
+      phone: String(v.phone ?? "").replace(/\D/g, ""),
+    }))
+    .filter((v) => v.name && v.phone.length >= 8);
+
+  const installResponse = await admin.graphql(
+    `#graphql
+      query {
+        currentAppInstallation {
+          id
+        }
+      }`,
+  );
+  const installId = (await installResponse.json()).data.currentAppInstallation
+    .id;
+
   const response = await admin.graphql(
     `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
+      mutation saveVendors($metafields: [MetafieldsSetInput!]!) {
+        metafieldsSet(metafields: $metafields) {
+          metafields {
             id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
-              }
-            }
-            demoInfo: metafield(namespace: "$app", key: "demo_info") {
-              jsonValue
-            }
+          }
+          userErrors {
+            field
+            message
           }
         }
       }`,
     {
       variables: {
-        product: {
-          title: `${color} Snowboard`,
-          metafields: [
-            {
-              namespace: "$app",
-              key: "demo_info",
-              value: "Created by React Router Template",
-            },
-          ],
-        },
+        metafields: [
+          {
+            ownerId: installId,
+            namespace: METAFIELD_NAMESPACE,
+            key: METAFIELD_KEY,
+            type: "json",
+            value: JSON.stringify(cleanVendors),
+          },
+        ],
       },
     },
   );
   const responseJson = await response.json();
-  const product = responseJson.data.productCreate.product;
-  const variantId = product.variants.edges[0].node.id;
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
-    },
-  );
-  const variantResponseJson = await variantResponse.json();
-  const metaobjectResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpsertMetaobject($handle: MetaobjectHandleInput!, $values: JSON!) {
-      metaobjectUpsert(handle: $handle, values: $values) {
-        metaobject {
-          id
-          handle
-          values
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }`,
-    {
-      variables: {
-        handle: {
-          type: "$app:example",
-          handle: "demo-entry",
-        },
-        values: {
-          title: "Demo Entry",
-          description:
-            "This metaobject was created by the Shopify app template to demonstrate the metaobject API.",
-        },
-      },
-    },
-  );
-  const metaobjectResponseJson = await metaobjectResponse.json();
+  const errors = responseJson.data.metafieldsSet.userErrors;
 
-  return {
-    product: responseJson.data.productCreate.product,
-    variant: variantResponseJson.data.productVariantsBulkUpdate.productVariants,
-    metaobject: metaobjectResponseJson.data.metaobjectUpsert.metaobject,
-  };
+  return { ok: errors.length === 0, errors, saved: cleanVendors };
 };
 
 export default function Index() {
+  const { vendors: initialVendors } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
-  const isLoading =
+  const [vendors, setVendors] = useState(
+    initialVendors.length > 0 ? initialVendors : [{ name: "", phone: "" }],
+  );
+  const isSaving =
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formMethod === "POST";
 
   useEffect(() => {
-    if (fetcher.data?.product?.id) {
-      shopify.toast.show("Product created");
+    if (!fetcher.data) return;
+    if (fetcher.data.ok) {
+      shopify.toast.show("Vendedores guardados");
+    } else {
+      shopify.toast.show("Error al guardar, revisa los datos", {
+        isError: true,
+      });
     }
-  }, [fetcher.data?.product?.id, shopify]);
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
+  }, [fetcher.data, shopify]);
+
+  const updateVendor = (index, field, value) => {
+    setVendors((current) =>
+      current.map((v, i) => (i === index ? { ...v, [field]: value } : v)),
+    );
+  };
+
+  const addVendor = () =>
+    setVendors((current) => [...current, { name: "", phone: "" }]);
+
+  const removeVendor = (index) =>
+    setVendors((current) => current.filter((_, i) => i !== index));
+
+  const saveVendors = () =>
+    fetcher.submit({ vendors: JSON.stringify(vendors) }, { method: "POST" });
 
   return (
-    <s-page heading="Shopify app template">
-      <s-button slot="primary-action" onClick={generateProduct}>
-        Generate a product
+    <s-page heading="Multi-Vendor WhatsApp Router">
+      <s-button
+        slot="primary-action"
+        onClick={saveVendors}
+        {...(isSaving ? { loading: true } : {})}
+      >
+        Guardar
       </s-button>
 
-      <s-section heading="Congrats on creating a new Shopify app 🎉">
+      <s-section heading="Vendedores de WhatsApp">
         <s-paragraph>
-          This embedded app template uses{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/tools/app-bridge"
-            target="_blank"
-          >
-            App Bridge
-          </s-link>{" "}
-          interface examples like an{" "}
-          <s-link href="/app/additional">additional page in the app nav</s-link>
-          , as well as an{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            Admin GraphQL
-          </s-link>{" "}
-          mutation demo, to provide a starting point for app development.
+          Agrega los números de tus vendedores. Los clics de tus clientes en el
+          botón &quot;Comprar por WhatsApp&quot; se repartirán equitativamente
+          entre ellos (round robin).
         </s-paragraph>
-      </s-section>
-      <s-section heading="Get started with products">
-        <s-paragraph>
-          Generate a product with GraphQL and get the JSON output for that
-          product. Learn more about the{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-            target="_blank"
-          >
-            productCreate
-          </s-link>{" "}
-          mutation in our API references. Includes a product{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metafields"
-            target="_blank"
-          >
-            metafield
-          </s-link>{" "}
-          and{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metaobjects"
-            target="_blank"
-          >
-            metaobject
-          </s-link>
-          .
-        </s-paragraph>
-        <s-stack direction="inline" gap="base">
-          <s-button
-            onClick={generateProduct}
-            {...(isLoading ? { loading: true } : {})}
-          >
-            Generate a product
-          </s-button>
-          {fetcher.data?.product && (
-            <s-button
-              onClick={() => {
-                shopify.intents.invoke?.("edit:shopify/Product", {
-                  value: fetcher.data?.product?.id,
-                });
-              }}
-              target="_blank"
-              variant="tertiary"
+
+        <s-stack direction="block" gap="base">
+          {vendors.map((vendor, index) => (
+            <s-stack
+              key={index}
+              direction="inline"
+              gap="base"
+              alignItems="end"
             >
-              Edit product
-            </s-button>
-          )}
-        </s-stack>
-        {fetcher.data?.product && (
-          <s-section heading="productCreate mutation">
-            <s-stack direction="block" gap="base">
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre
-                  style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  <code>{JSON.stringify(fetcher.data.product, null, 2)}</code>
-                </pre>
-              </s-box>
-
-              <s-heading>productVariantsBulkUpdate mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre
-                  style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  <code>{JSON.stringify(fetcher.data.variant, null, 2)}</code>
-                </pre>
-              </s-box>
-
-              <s-heading>metaobjectUpsert mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre
-                  style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    wordBreak: "break-word",
-                  }}
-                >
-                  <code>
-                    {JSON.stringify(fetcher.data.metaobject, null, 2)}
-                  </code>
-                </pre>
-              </s-box>
+              <s-text-field
+                label="Nombre"
+                placeholder="Ej: María"
+                value={vendor.name}
+                onChange={(e) => updateVendor(index, "name", e.currentTarget.value)}
+              ></s-text-field>
+              <s-text-field
+                label="Número de WhatsApp"
+                placeholder="Ej: 50371234567"
+                details="Código de país + número, solo dígitos"
+                value={vendor.phone}
+                onChange={(e) => updateVendor(index, "phone", e.currentTarget.value)}
+              ></s-text-field>
+              <s-button
+                icon="delete"
+                variant="tertiary"
+                tone="critical"
+                accessibilityLabel={`Eliminar vendedor ${index + 1}`}
+                onClick={() => removeVendor(index)}
+              ></s-button>
             </s-stack>
-          </s-section>
-        )}
+          ))}
+        </s-stack>
+
+        <s-stack direction="inline" gap="base">
+          <s-button icon="plus" onClick={addVendor}>
+            Agregar vendedor
+          </s-button>
+          <s-button
+            variant="primary"
+            onClick={saveVendors}
+            {...(isSaving ? { loading: true } : {})}
+          >
+            Guardar
+          </s-button>
+        </s-stack>
       </s-section>
 
-      <s-section slot="aside" heading="App template specs">
-        <s-paragraph>
-          <s-text>Framework: </s-text>
-          <s-link href="https://reactrouter.com/" target="_blank">
-            React Router
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Interface: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/app-home/using-polaris-components"
-            target="_blank"
-          >
-            Polaris web components
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>API: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            GraphQL
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Custom data: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data"
-            target="_blank"
-          >
-            Metafields &amp; metaobjects
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Database: </s-text>
-          <s-link href="https://www.prisma.io/" target="_blank">
-            Prisma
-          </s-link>
-        </s-paragraph>
-      </s-section>
-
-      <s-section slot="aside" heading="Next steps">
+      <s-section slot="aside" heading="¿Cómo funciona?">
         <s-unordered-list>
           <s-list-item>
-            Build an{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/getting-started/build-app-example"
-              target="_blank"
-            >
-              example app
-            </s-link>
+            Cada vendedor recibe los clics por turnos, de forma secuencial y
+            equitativa.
           </s-list-item>
           <s-list-item>
-            Explore Shopify&apos;s API with{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-              target="_blank"
-            >
-              GraphiQL
-            </s-link>
+            El número debe incluir el código de país, sin el signo +. Ejemplo
+            para El Salvador: 50371234567.
+          </s-list-item>
+          <s-list-item>
+            Los cambios se aplican en tu tienda al instante después de guardar.
           </s-list-item>
         </s-unordered-list>
       </s-section>
