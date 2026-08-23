@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -8,6 +8,19 @@ import { authenticate } from "../shopify.server";
 // Theme App Extension pueda leerlos desde Liquid sin llamadas al backend.
 const METAFIELD_NAMESPACE = "whatsapp_router";
 const METAFIELD_KEY = "vendors";
+const SAVE_BAR_ID = "vendors-save-bar";
+const MIN_PHONE_DIGITS = 8;
+
+const digitsOnly = (value) => String(value ?? "").replace(/\D/g, "");
+
+// Contador módulo-level: garantiza ids de fila únicos y estables para React
+let rowIdCounter = 0;
+const makeRows = (list) =>
+  (list.length > 0 ? list : [{ name: "", phone: "" }]).map((v) => ({
+    id: ++rowIdCounter,
+    name: v.name ?? "",
+    phone: v.phone ?? "",
+  }));
 
 export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
@@ -41,14 +54,20 @@ export const action = async ({ request }) => {
     return { ok: false, errors: [{ message: "Datos inválidos" }] };
   }
 
-  // Normaliza: nombre sin espacios sobrantes, teléfono solo dígitos
-  // (formato wa.me: código de país + número, sin "+" ni espacios)
+  // Red de seguridad del servidor: normaliza, valida y elimina duplicados.
+  // La validación principal (con mensajes por campo) ocurre en el cliente.
+  const seenPhones = new Set();
   const cleanVendors = vendors
     .map((v) => ({
       name: String(v.name ?? "").trim(),
-      phone: String(v.phone ?? "").replace(/\D/g, ""),
+      phone: digitsOnly(v.phone),
     }))
-    .filter((v) => v.name && v.phone.length >= 8);
+    .filter((v) => {
+      if (!v.name || v.phone.length < MIN_PHONE_DIGITS) return false;
+      if (seenPhones.has(v.phone)) return false;
+      seenPhones.add(v.phone);
+      return true;
+    });
 
   const installResponse = await admin.graphql(
     `#graphql
@@ -97,72 +116,108 @@ export const action = async ({ request }) => {
 };
 
 export default function Index() {
-  const { vendors: initialVendors } = useLoaderData();
+  const { vendors: vendorsOnLoad } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
-  // Cada fila lleva un id estable para que React no confunda filas al eliminar
-  const [vendors, setVendors] = useState(() => {
-    const rows = initialVendors.length > 0 ? initialVendors : [{}];
-    return rows.map((v, i) => ({
-      id: i + 1,
-      name: v.name ?? "",
-      phone: v.phone ?? "",
-    }));
-  });
+
+  // `saved` refleja lo que está en Shopify; `rows` lo que se está editando
+  const [saved, setSaved] = useState(vendorsOnLoad);
+  const [rows, setRows] = useState(() => makeRows(vendorsOnLoad));
+
   const isSaving =
     ["loading", "submitting"].includes(fetcher.state) &&
     fetcher.formMethod === "POST";
 
+  // Valida cada fila con contenido; las filas totalmente vacías se ignoran
+  const validation = useMemo(() => {
+    const filledRows = rows.filter((r) => r.name.trim() || r.phone.trim());
+    const seenPhones = new Set();
+    const errors = new Map();
+
+    for (const row of filledRows) {
+      const phone = digitsOnly(row.phone);
+      const rowErrors = {};
+      if (!row.name.trim()) {
+        rowErrors.name = "Escribe un nombre";
+      }
+      if (phone.length < MIN_PHONE_DIGITS) {
+        rowErrors.phone = `Mínimo ${MIN_PHONE_DIGITS} dígitos, incluye el código de país`;
+      } else if (seenPhones.has(phone)) {
+        rowErrors.phone = "Este número ya está en la lista";
+      }
+      seenPhones.add(phone);
+      if (rowErrors.name || rowErrors.phone) {
+        errors.set(row.id, rowErrors);
+      }
+    }
+
+    const cleanList = filledRows.map((r) => ({
+      name: r.name.trim(),
+      phone: digitsOnly(r.phone),
+    }));
+
+    return { errors, cleanList, hasErrors: errors.size > 0 };
+  }, [rows]);
+
+  const isDirty = useMemo(
+    () => JSON.stringify(validation.cleanList) !== JSON.stringify(saved),
+    [validation.cleanList, saved],
+  );
+
+  // La Save Bar oficial del admin aparece solo cuando hay cambios sin guardar
+  useEffect(() => {
+    if (isDirty) {
+      shopify.saveBar.show(SAVE_BAR_ID);
+    } else {
+      shopify.saveBar.hide(SAVE_BAR_ID);
+    }
+  }, [isDirty, shopify]);
+
+  useEffect(() => () => shopify.saveBar.hide(SAVE_BAR_ID), [shopify]);
+
+  // Tras un guardado exitoso, sincroniza la UI con lo que quedó en Shopify
   useEffect(() => {
     if (!fetcher.data) return;
     if (fetcher.data.ok) {
-      shopify.toast.show("Vendedores guardados");
+      setSaved(fetcher.data.saved);
+      setRows(makeRows(fetcher.data.saved));
+      shopify.toast.show(
+        `Guardado: ${fetcher.data.saved.length} vendedor(es) activo(s)`,
+      );
     } else {
-      shopify.toast.show("Error al guardar, revisa los datos", {
-        isError: true,
-      });
+      shopify.toast.show("No se pudo guardar", { isError: true });
     }
   }, [fetcher.data, shopify]);
 
-  const updateVendor = (id, field, value) => {
-    setVendors((current) =>
-      current.map((v) => (v.id === id ? { ...v, [field]: value } : v)),
+  const updateRow = (id, field, value) => {
+    setRows((current) =>
+      current.map((r) => (r.id === id ? { ...r, [field]: value } : r)),
     );
   };
 
-  const addVendor = () =>
-    setVendors((current) => [
-      ...current,
-      {
-        id: Math.max(0, ...current.map((v) => v.id)) + 1,
-        name: "",
-        phone: "",
-      },
-    ]);
+  const addRow = () =>
+    setRows((current) => [...current, ...makeRows([{ name: "", phone: "" }])]);
 
-  const removeVendor = (id) =>
-    setVendors((current) => current.filter((v) => v.id !== id));
+  const removeRow = (id) =>
+    setRows((current) => current.filter((r) => r.id !== id));
 
-  const saveVendors = () =>
+  const handleSave = () => {
+    if (validation.hasErrors) {
+      shopify.toast.show("Corrige los campos marcados en rojo", {
+        isError: true,
+      });
+      return;
+    }
     fetcher.submit(
-      {
-        vendors: JSON.stringify(
-          vendors.map(({ name, phone }) => ({ name, phone })),
-        ),
-      },
+      { vendors: JSON.stringify(validation.cleanList) },
       { method: "POST" },
     );
+  };
+
+  const handleDiscard = () => setRows(makeRows(saved));
 
   return (
     <s-page heading="Multi-Vendor WhatsApp Router">
-      <s-button
-        slot="primary-action"
-        onClick={saveVendors}
-        {...(isSaving ? { loading: true } : {})}
-      >
-        Guardar
-      </s-button>
-
       <s-section heading="Vendedores de WhatsApp">
         <s-paragraph>
           Agrega los números de tus vendedores. Los clics de tus clientes en el
@@ -170,69 +225,72 @@ export default function Index() {
           entre ellos (round robin).
         </s-paragraph>
 
-        {fetcher.data?.ok && (
-          <s-banner
-            heading={`Guardado: ${fetcher.data.saved.length} vendedor(es) activo(s)`}
-            tone="success"
-          >
-            Los clics del botón de WhatsApp ya se reparten entre estos números.
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-badge tone={saved.length > 0 ? "success" : "neutral"}>
+            {`${saved.length} vendedor(es) activo(s)`}
+          </s-badge>
+          {isDirty && <s-badge tone="attention">Cambios sin guardar</s-badge>}
+        </s-stack>
+
+        {saved.length === 0 && (
+          <s-banner heading="Aún no hay vendedores activos" tone="info">
+            El botón de WhatsApp no aparecerá en tu tienda hasta que guardes al
+            menos un vendedor.
           </s-banner>
         )}
         {fetcher.data && !fetcher.data.ok && (
           <s-banner heading="No se pudo guardar" tone="critical">
-            Revisa que cada vendedor tenga nombre y un número válido (mínimo 8
-            dígitos).
+            Shopify rechazó el guardado. Intenta de nuevo; si el problema
+            persiste, revisa los números ingresados.
           </s-banner>
         )}
 
         <s-stack direction="block" gap="base">
-          {vendors.map((vendor) => (
-            <s-grid
-              key={vendor.id}
-              gridTemplateColumns="1fr 1fr auto"
-              gap="base"
-              alignItems="start"
-            >
-              <s-text-field
-                label="Nombre"
-                placeholder="Ej: María"
-                value={vendor.name}
-                onChange={(e) =>
-                  updateVendor(vendor.id, "name", e.currentTarget.value)
-                }
-              ></s-text-field>
-              <s-text-field
-                label="Número de WhatsApp"
-                placeholder="Ej: 50371234567"
-                details="Código de país + número, solo dígitos"
-                value={vendor.phone}
-                onChange={(e) =>
-                  updateVendor(vendor.id, "phone", e.currentTarget.value)
-                }
-              ></s-text-field>
-              <s-box paddingBlockStart="large">
-                <s-button
-                  icon="delete"
-                  variant="tertiary"
-                  tone="critical"
-                  accessibilityLabel={`Eliminar vendedor ${vendor.name || "sin nombre"}`}
-                  onClick={() => removeVendor(vendor.id)}
-                ></s-button>
-              </s-box>
-            </s-grid>
-          ))}
+          {rows.map((row) => {
+            const rowErrors = validation.errors.get(row.id) ?? {};
+            return (
+              <s-grid
+                key={row.id}
+                gridTemplateColumns="1fr 1fr auto"
+                gap="base"
+                alignItems="start"
+              >
+                <s-text-field
+                  label="Nombre"
+                  placeholder="Ej: María"
+                  value={row.name}
+                  {...(rowErrors.name ? { error: rowErrors.name } : {})}
+                  onChange={(e) =>
+                    updateRow(row.id, "name", e.currentTarget.value)
+                  }
+                ></s-text-field>
+                <s-text-field
+                  label="Número de WhatsApp"
+                  placeholder="Ej: 50371234567"
+                  details="Código de país + número, solo dígitos"
+                  value={row.phone}
+                  {...(rowErrors.phone ? { error: rowErrors.phone } : {})}
+                  onChange={(e) =>
+                    updateRow(row.id, "phone", e.currentTarget.value)
+                  }
+                ></s-text-field>
+                <s-box paddingBlockStart="large">
+                  <s-button
+                    icon="delete"
+                    variant="tertiary"
+                    tone="critical"
+                    accessibilityLabel={`Eliminar vendedor ${row.name || "sin nombre"}`}
+                    onClick={() => removeRow(row.id)}
+                  ></s-button>
+                </s-box>
+              </s-grid>
+            );
+          })}
         </s-stack>
 
         <s-stack direction="inline" gap="base">
-          <s-button icon="plus" onClick={addVendor}>
+          <s-button icon="plus" onClick={addRow}>
             Agregar vendedor
-          </s-button>
-          <s-button
-            variant="primary"
-            onClick={saveVendors}
-            {...(isSaving ? { loading: true } : {})}
-          >
-            Guardar
           </s-button>
         </s-stack>
       </s-section>
@@ -248,10 +306,20 @@ export default function Index() {
             para El Salvador: 50371234567.
           </s-list-item>
           <s-list-item>
+            Al editar aparecerá la barra &quot;Guardar / Descartar&quot; arriba.
             Los cambios se aplican en tu tienda al instante después de guardar.
           </s-list-item>
         </s-unordered-list>
       </s-section>
+
+      <ui-save-bar id={SAVE_BAR_ID}>
+        <button
+          variant="primary"
+          onClick={handleSave}
+          {...(isSaving ? { loading: "" } : {})}
+        ></button>
+        <button onClick={handleDiscard}></button>
+      </ui-save-bar>
     </s-page>
   );
 }
