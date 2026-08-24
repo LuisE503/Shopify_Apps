@@ -13,14 +13,20 @@ const MIN_PHONE_DIGITS = 8;
 
 const digitsOnly = (value) => String(value ?? "").replace(/\D/g, "");
 
-// Contador módulo-level: garantiza ids de fila únicos y estables para React
+// Contador módulo-level: garantiza ids de fila únicos y estables para React.
+// savedName/savedPhone guardan lo que está en Shopify para marcar qué fila cambió.
 let rowIdCounter = 0;
 const makeRows = (list) =>
   (list.length > 0 ? list : [{ name: "", phone: "" }]).map((v) => ({
     id: ++rowIdCounter,
     name: v.name ?? "",
     phone: v.phone ?? "",
+    savedName: v.name ?? "",
+    savedPhone: v.phone ?? "",
   }));
+
+const isRowDirty = (row) =>
+  row.name !== row.savedName || row.phone !== row.savedPhone;
 
 export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
@@ -226,10 +232,10 @@ export default function Index() {
         </s-paragraph>
 
         <s-stack direction="inline" gap="base" alignItems="center">
-          <s-badge tone={saved.length > 0 ? "success" : "neutral"}>
+          <s-badge tone={saved.length > 0 ? "success" : "auto"}>
             {`${saved.length} vendedor(es) activo(s)`}
           </s-badge>
-          {isDirty && <s-badge tone="attention">Cambios sin guardar</s-badge>}
+          {isDirty && <s-badge tone="warning">Cambios sin guardar</s-badge>}
         </s-stack>
 
         {saved.length === 0 && (
@@ -251,7 +257,7 @@ export default function Index() {
             return (
               <s-grid
                 key={row.id}
-                gridTemplateColumns="1fr 1fr auto"
+                gridTemplateColumns="1fr 1fr 150px"
                 gap="base"
                 alignItems="start"
               >
@@ -271,17 +277,22 @@ export default function Index() {
                   value={row.phone}
                   {...(rowErrors.phone ? { error: rowErrors.phone } : {})}
                   onChange={(e) =>
-                    updateRow(row.id, "phone", e.currentTarget.value)
+                    updateRow(row.id, "phone", digitsOnly(e.currentTarget.value))
                   }
                 ></s-text-field>
                 <s-box paddingBlockStart="large">
-                  <s-button
-                    icon="delete"
-                    variant="tertiary"
-                    tone="critical"
-                    accessibilityLabel={`Eliminar vendedor ${row.name || "sin nombre"}`}
-                    onClick={() => removeRow(row.id)}
-                  ></s-button>
+                  <s-stack direction="inline" gap="base" alignItems="center">
+                    {isRowDirty(row) && (
+                      <s-badge tone="warning">Sin guardar</s-badge>
+                    )}
+                    <s-button
+                      icon="delete"
+                      variant="tertiary"
+                      tone="critical"
+                      accessibilityLabel={`Eliminar vendedor ${row.name || "sin nombre"}`}
+                      onClick={() => removeRow(row.id)}
+                    ></s-button>
+                  </s-stack>
                 </s-box>
               </s-grid>
             );
