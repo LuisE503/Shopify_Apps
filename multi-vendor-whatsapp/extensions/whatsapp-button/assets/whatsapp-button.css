@@ -1,0 +1,41 @@
+.mvw-block {
+  margin: 12px 0;
+}
+
+.mvw-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 22px;
+  border-radius: 8px;
+  background: var(--mvw-bg, #25d366);
+  color: var(--mvw-text, #ffffff);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.mvw-button:hover,
+.mvw-button:focus {
+  opacity: 0.88;
+  color: var(--mvw-text, #ffffff);
+  text-decoration: none;
+}
+
+.mvw-button--full {
+  display: flex;
+  width: 100%;
+}
+
+.mvw-button__icon {
+  flex-shrink: 0;
+}
+
+.mvw-button[hidden] {
+  display: none;
+}
