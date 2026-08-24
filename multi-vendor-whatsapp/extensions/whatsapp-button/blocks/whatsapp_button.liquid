@@ -34,6 +34,20 @@
   {%- assign product_url = shop.url | append: product.url -%}
   {%- assign whatsapp_message = message_template | replace: '{producto}', product.title | replace: '{url}', product_url -%}
 
+  {%- comment -%}
+    Enlace de reserva calculado en el servidor con el primer vendedor activo.
+    Si el JavaScript no carga, el botón sigue llevando a WhatsApp; cuando sí
+    carga, el round robin reescribe este enlace con el vendedor que toque.
+  {%- endcomment -%}
+  {%- assign fallback_phone = '' -%}
+  {%- for vendor in vendors -%}
+    {%- if fallback_phone == '' and vendor.phone != blank and vendor.active != false -%}
+      {%- assign fallback_phone = vendor.phone -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- assign encoded_message = whatsapp_message | url_encode | replace: '+', '%20' -%}
+  {%- assign fallback_link = 'https://wa.me/' | append: fallback_phone | append: '?text=' | append: encoded_message -%}
+
   {{ 'whatsapp-button.css' | asset_url | stylesheet_tag }}
 
   <div
@@ -54,10 +68,9 @@
     <a
       class="mvw-button{% if block.settings.full_width %} mvw-button--full{% endif %}"
       data-mvw-button
-      href="#"
+      href="{{ fallback_link }}"
       target="_blank"
       rel="noopener noreferrer"
-      hidden
     >
       {%- if block.settings.show_icon -%}
         <svg class="mvw-button__icon" viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true" focusable="false">

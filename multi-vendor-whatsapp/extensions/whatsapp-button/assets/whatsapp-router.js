@@ -89,8 +89,8 @@
     var index = readIndex(vendors.length) % vendors.length;
     var vendor = vendors[index];
 
+    // Sustituye el enlace de reserva que ya venía renderizado desde Liquid
     button.href = buildLink(vendor, config.message);
-    button.hidden = false;
     button.addEventListener("click", function () {
       advanceIndex(index, vendors.length);
     });
