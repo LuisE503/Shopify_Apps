@@ -14,13 +14,18 @@ use_legacy_install_flow = false
 [webhooks]
 api_version = "2026-07"
 
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/app/uninstalled"
-  topics = [ "app/uninstalled" ]
-
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/app/scopes_update"
-  topics = [ "app/scopes_update" ]
+# IMPORTANTE: suscripciones desactivadas mientras desarrollamos con
+# `shopify app dev --use-localhost` (Shopify no acepta https://localhost como
+# destino de webhooks). Los handlers siguen en app/routes/webhooks.*.jsx.
+# REACTIVAR antes de desplegar a producción (`shopify app deploy`).
+#
+#   [[webhooks.subscriptions]]
+#   uri = "/webhooks/app/uninstalled"
+#   topics = [ "app/uninstalled" ]
+#
+#   [[webhooks.subscriptions]]
+#   uri = "/webhooks/app/scopes_update"
+#   topics = [ "app/scopes_update" ]
 
 [auth]
 redirect_urls = [ ]
