@@ -13,6 +13,10 @@ const MIN_PHONE_DIGITS = 8;
 
 const digitsOnly = (value) => String(value ?? "").replace(/\D/g, "");
 
+// Se aceptan separadores comunes al escribir: +503 6860-2600, (503) 686 02600.
+// Cualquier otro carácter (letras, símbolos) se marca como error visible.
+const ALLOWED_PHONE_CHARS = /^[\d\s+().-]*$/;
+
 // Contador módulo-level: garantiza ids de fila únicos y estables para React.
 // savedName/savedPhone guardan lo que está en Shopify para marcar qué fila cambió.
 let rowIdCounter = 0;
@@ -26,7 +30,18 @@ const makeRows = (list) =>
   }));
 
 const isRowDirty = (row) =>
-  row.name !== row.savedName || row.phone !== row.savedPhone;
+  row.name.trim() !== row.savedName || row.phone.trim() !== row.savedPhone;
+
+// Firma de lo visible en pantalla, ignorando filas totalmente vacías
+const visibleSignature = (rows) =>
+  JSON.stringify(
+    rows
+      .map((r) => [r.name.trim(), r.phone.trim()])
+      .filter(([name, phone]) => name || phone),
+  );
+
+const savedSignature = (saved) =>
+  JSON.stringify(saved.map((v) => [v.name, v.phone]));
 
 export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
@@ -141,17 +156,23 @@ export default function Index() {
     const errors = new Map();
 
     for (const row of filledRows) {
-      const phone = digitsOnly(row.phone);
+      const rawPhone = row.phone.trim();
+      const phone = digitsOnly(rawPhone);
       const rowErrors = {};
+
       if (!row.name.trim()) {
         rowErrors.name = "Escribe un nombre";
       }
-      if (phone.length < MIN_PHONE_DIGITS) {
+
+      if (!ALLOWED_PHONE_CHARS.test(rawPhone)) {
+        rowErrors.phone = "Solo se permiten números. Ejemplo: 50368602600";
+      } else if (phone.length < MIN_PHONE_DIGITS) {
         rowErrors.phone = `Mínimo ${MIN_PHONE_DIGITS} dígitos, incluye el código de país`;
       } else if (seenPhones.has(phone)) {
         rowErrors.phone = "Este número ya está en la lista";
       }
       seenPhones.add(phone);
+
       if (rowErrors.name || rowErrors.phone) {
         errors.set(row.id, rowErrors);
       }
@@ -165,9 +186,10 @@ export default function Index() {
     return { errors, cleanList, hasErrors: errors.size > 0 };
   }, [rows]);
 
+  // "Hay cambios" = lo que se ve en pantalla difiere de lo guardado en Shopify
   const isDirty = useMemo(
-    () => JSON.stringify(validation.cleanList) !== JSON.stringify(saved),
-    [validation.cleanList, saved],
+    () => visibleSignature(rows) !== savedSignature(saved),
+    [rows, saved],
   );
 
   // La Save Bar oficial del admin aparece solo cuando hay cambios sin guardar
@@ -266,7 +288,7 @@ export default function Index() {
                   placeholder="Ej: María"
                   value={row.name}
                   {...(rowErrors.name ? { error: rowErrors.name } : {})}
-                  onChange={(e) =>
+                  onInput={(e) =>
                     updateRow(row.id, "name", e.currentTarget.value)
                   }
                 ></s-text-field>
@@ -276,8 +298,8 @@ export default function Index() {
                   details="Código de país + número, solo dígitos"
                   value={row.phone}
                   {...(rowErrors.phone ? { error: rowErrors.phone } : {})}
-                  onChange={(e) =>
-                    updateRow(row.id, "phone", digitsOnly(e.currentTarget.value))
+                  onInput={(e) =>
+                    updateRow(row.id, "phone", e.currentTarget.value)
                   }
                 ></s-text-field>
                 <s-box paddingBlockStart="large">
