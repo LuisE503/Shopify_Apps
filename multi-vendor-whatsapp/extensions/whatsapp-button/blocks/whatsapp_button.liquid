@@ -16,26 +16,37 @@
 {%- endfor -%}
 
 {%- comment -%}
-  Disponibilidad de lo que el cliente está viendo. Con "hide" el bloque no se
-  renderiza siquiera, para que el botón no aparezca ni un instante antes de
-  que el JavaScript lo evalúe.
+  Stock. Solo se deja de renderizar cuando el producto entero está agotado y
+  el comerciante eligió ocultar: si una talla está agotada y otra no, el
+  bloque se renderiza oculto y el JavaScript lo muestra al cambiar de talla.
 {%- endcomment -%}
-{%- assign in_stock = product.selected_or_first_available_variant.available -%}
+{%- assign selected_variant = product.selected_or_first_available_variant -%}
+{%- assign selected_in_stock = selected_variant.available -%}
 {%- if product.has_only_default_variant -%}
-  {%- assign in_stock = product.available -%}
+  {%- assign selected_in_stock = product.available -%}
 {%- endif -%}
 
-{%- assign stock_hides_block = false -%}
-{%- if block.settings.out_of_stock_behavior == 'hide' and in_stock == false -%}
-  {%- assign stock_hides_block = true -%}
+{%- assign hide_behavior = false -%}
+{%- if block.settings.out_of_stock_behavior == 'hide' -%}
+  {%- assign hide_behavior = true -%}
+{%- endif -%}
+
+{%- assign skip_render = false -%}
+{%- if hide_behavior and product.available == false -%}
+  {%- assign skip_render = true -%}
+{%- endif -%}
+
+{%- assign start_hidden = false -%}
+{%- if hide_behavior and selected_in_stock == false -%}
+  {%- assign start_hidden = true -%}
 {%- endif -%}
 
 {%- assign button_label = block.settings.label -%}
-{%- if block.settings.out_of_stock_behavior == 'label' and in_stock == false -%}
+{%- if block.settings.out_of_stock_behavior == 'label' and selected_in_stock == false -%}
   {%- assign button_label = block.settings.out_of_stock_label -%}
 {%- endif -%}
 
-{%- if active_count > 0 and product and stock_hides_block == false -%}
+{%- if active_count > 0 and product and skip_render == false -%}
 
   {%- capture vendors_json -%}
     [
@@ -52,17 +63,18 @@
   {%- assign default_message = 'Hola, me interesa este producto: {producto} - {url}' -%}
   {%- assign message_template = app.metafields.whatsapp_router.message.value | default: default_message -%}
   {%- assign base_product_url = shop.url | append: product.url -%}
+  {%- assign product_price = product.selected_or_first_available_variant.price | money -%}
 
   {%- comment -%}
-    Variantes (talla, color...). El JavaScript usa este mapa para nombrar la
-    variante que el cliente tiene seleccionada en ese momento.
+    Variantes (talla, color...) con su precio y stock. El JavaScript usa este
+    mapa para nombrar la variante que el cliente tiene seleccionada.
   {%- endcomment -%}
   {%- capture variants_json -%}
     {
     {%- assign variant_separator = '' -%}
     {%- unless product.has_only_default_variant -%}
       {%- for variant in product.variants -%}
-        {{ variant_separator }}"{{ variant.id }}": {"title": {{ variant.title | json }}, "available": {{ variant.available | json }}}
+        {{ variant_separator }}"{{ variant.id }}": {"title": {{ variant.title | json }}, "price": {{ variant.price | money | json }}, "available": {{ variant.available | json }}}
         {%- assign variant_separator = ',' -%}
       {%- endfor -%}
     {%- endunless -%}
@@ -73,11 +85,13 @@
   {%- assign product_label = product.title -%}
   {%- assign product_url = base_product_url -%}
   {%- unless product.has_only_default_variant -%}
-    {%- assign selected_variant = product.selected_or_first_available_variant -%}
     {%- assign product_label = product.title | append: ' (' | append: selected_variant.title | append: ')' -%}
     {%- assign product_url = base_product_url | append: '?variant=' | append: selected_variant.id -%}
   {%- endunless -%}
-  {%- assign whatsapp_message = message_template | replace: '{producto}', product_label | replace: '{url}', product_url -%}
+  {%- assign whatsapp_message = message_template
+    | replace: '{producto}', product_label
+    | replace: '{precio}', product_price
+    | replace: '{url}', product_url -%}
 
   {%- comment -%}
     Enlace de reserva calculado en el servidor con el primer vendedor activo.
@@ -117,6 +131,7 @@
   <div
     class="mvw-block{% if block.settings.full_width_mobile %} mvw-block--mobile-full{% endif %}"
     data-mvw-block
+    {% if start_hidden %}hidden{% endif %}
     style="
       --mvw-bg: {{ block.settings.bg_color }};
       --mvw-text: {{ block.settings.text_color }};
@@ -136,14 +151,15 @@
         "vendors": {{ vendors_json }},
         "shopUtcOffset": {{ 'now' | date: '%z' | json }},
         "clickEndpoint": "/apps/whatsapp-router/click",
-        "productAvailable": {{ product.available | json }},
-        "outOfStockBehavior": {{ block.settings.out_of_stock_behavior | json }},
-        "outOfStockLabel": {{ block.settings.out_of_stock_label | json }},
-        "defaultLabel": {{ block.settings.label | json }},
         "messageTemplate": {{ message_template | json }},
         "productTitle": {{ product.title | json }},
         "productUrl": {{ base_product_url | json }},
+        "productPrice": {{ product_price | json }},
+        "productAvailable": {{ product.available | json }},
         "variants": {{ variants_json }},
+        "outOfStockBehavior": {{ block.settings.out_of_stock_behavior | json }},
+        "outOfStockLabel": {{ block.settings.out_of_stock_label | json }},
+        "defaultLabel": {{ block.settings.label | json }},
         "hideAddToCart": {{ block.settings.hide_add_to_cart | json }},
         "customSelector": {{ block.settings.custom_selector | json }}
       }

@@ -3,6 +3,7 @@ import db from "../db.server";
 
 const MAX_NAME_LENGTH = 80;
 const MAX_PHONE_LENGTH = 20;
+const MAX_PRODUCT_LENGTH = 160;
 
 /**
  * Registra un clic en el botón de WhatsApp.
@@ -33,6 +34,10 @@ export const action = async ({ request }) => {
   const vendorName = String(payload?.name ?? "")
     .trim()
     .slice(0, MAX_NAME_LENGTH);
+  const productTitle =
+    String(payload?.product ?? "")
+      .trim()
+      .slice(0, MAX_PRODUCT_LENGTH) || null;
 
   // Sin número no hay nada que atribuir; se ignora en silencio
   if (!vendorPhone) {
@@ -40,8 +45,11 @@ export const action = async ({ request }) => {
   }
 
   await db.vendorClick.create({
-    data: { shop, vendorPhone, vendorName },
+    data: { shop, vendorPhone, vendorName, productTitle },
   });
 
   return new Response(null, { status: 204 });
 };
+
+// El proxy solo acepta POST; a un GET se le responde sin contenido
+export const loader = () => new Response(null, { status: 405 });

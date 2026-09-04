@@ -3,12 +3,18 @@
  *
  * Reparte los clics entre los vendedores activos con una estrategia round
  * robin guardada en localStorage: cada clic del visitante avanza al siguiente
- * vendedor de la lista.
+ * vendedor de la lista. Respeta horarios, prioridades y stock.
  */
 (function () {
   "use strict";
 
+  // El bloque de producto y el flotante incluyen este mismo archivo; en una
+  // ficha con ambos, el navegador lo ejecutaría dos veces
+  if (window.__mvwRouterLoaded) return;
+  window.__mvwRouterLoaded = true;
+
   var STORAGE_KEY = "mvw:vendor-index";
+  var MAX_WEIGHT = 5;
 
   // Selectores habituales del botón "Añadir al carrito" en los temas de Shopify
   var ADD_TO_CART_SELECTORS = [
@@ -17,6 +23,13 @@
     ".product-form__submit",
     ".shopify-payment-button",
   ];
+
+  // Bloques ya inicializados; se refrescan todos cuando cambia el turno
+  var blocks = [];
+
+  /* ------------------------------------------------------------------ */
+  /* Round robin                                                         */
+  /* ------------------------------------------------------------------ */
 
   function readIndex(total) {
     try {
@@ -44,11 +57,9 @@
     }
   }
 
-  function buildLink(vendor, message) {
-    return (
-      "https://wa.me/" + vendor.phone + "?text=" + encodeURIComponent(message)
-    );
-  }
+  /* ------------------------------------------------------------------ */
+  /* Horarios                                                            */
+  /* ------------------------------------------------------------------ */
 
   /** "08:30" -> 510 minutos. Devuelve null si el formato no es válido. */
   function toMinutes(time) {
@@ -66,7 +77,10 @@
     var match = /^([+-])(\d{2})(\d{2})$/.exec(String(offset || ""));
     var now = new Date();
     if (!match) {
-      return { day: now.getDay(), minutes: now.getHours() * 60 + now.getMinutes() };
+      return {
+        day: now.getDay(),
+        minutes: now.getHours() * 60 + now.getMinutes(),
+      };
     }
 
     var sign = match[1] === "-" ? -1 : 1;
@@ -83,6 +97,10 @@
     };
   }
 
+  function includesDay(days, day) {
+    return !Array.isArray(days) || days.length === 0 || days.indexOf(day) !== -1;
+  }
+
   /** ¿Este vendedor está en su turno ahora mismo? Sin horario, siempre sí. */
   function isOnDuty(vendor, now) {
     var hours = vendor.hours;
@@ -92,23 +110,18 @@
     var end = toMinutes(hours.end);
     if (start === null || end === null || start === end) return true;
 
-    var days = hours.days;
-    var withinDays =
-      !Array.isArray(days) || days.length === 0 || days.indexOf(now.day) !== -1;
-
     if (start < end) {
-      return withinDays && now.minutes >= start && now.minutes < end;
+      return (
+        includesDay(hours.days, now.day) &&
+        now.minutes >= start &&
+        now.minutes < end
+      );
     }
 
     // Turno nocturno que cruza la medianoche (por ejemplo 22:00 a 06:00).
     // Antes de medianoche cuenta el día del turno; después, el día anterior.
-    if (now.minutes >= start) return withinDays;
-    var previousDay = (now.day + 6) % 7;
-    var withinPreviousDay =
-      !Array.isArray(days) ||
-      days.length === 0 ||
-      days.indexOf(previousDay) !== -1;
-    return now.minutes < end && withinPreviousDay;
+    if (now.minutes >= start) return includesDay(hours.days, now.day);
+    return now.minutes < end && includesDay(hours.days, (now.day + 6) % 7);
   }
 
   /**
@@ -123,10 +136,14 @@
     return onDuty.length > 0 ? onDuty : vendors;
   }
 
+  /* ------------------------------------------------------------------ */
+  /* Prioridad                                                           */
+  /* ------------------------------------------------------------------ */
+
   function weightOf(vendor) {
     var weight = parseInt(vendor.weight, 10);
     if (isNaN(weight) || weight < 1) return 1;
-    return Math.min(weight, 5);
+    return Math.min(weight, MAX_WEIGHT);
   }
 
   /**
@@ -150,6 +167,23 @@
   }
 
   /**
+   * Vendedor al que le toca el próximo clic, evaluado en este instante:
+   * el turno y el stock pueden cambiar mientras la página sigue abierta.
+   */
+  function resolveVendor(config) {
+    var all = Array.isArray(config.vendors) ? config.vendors : [];
+    if (all.length === 0) return null;
+
+    var rotation = expandByWeight(availableVendors(all, config.shopUtcOffset));
+    var index = readIndex(rotation.length) % rotation.length;
+    return { vendor: rotation[index], index: index, total: rotation.length };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Producto, variantes y mensaje                                       */
+  /* ------------------------------------------------------------------ */
+
+  /**
    * Id de la variante que el cliente tiene seleccionada ahora mismo.
    * Los temas mantienen el parámetro ?variant= de la URL y el campo oculto
    * name="id" del formulario sincronizados con el selector de opciones.
@@ -168,7 +202,29 @@
     return null;
   }
 
-  /** Rellena {producto} y {url} añadiendo la variante elegida, si la hay. */
+  function currentVariant(config) {
+    var variantId = currentVariantId();
+    if (!variantId) return null;
+    var variant = (config.variants || {})[variantId];
+    return variant ? { id: variantId, data: variant } : null;
+  }
+
+  /** ¿Hay stock de lo que el cliente tiene seleccionado ahora mismo? */
+  function isInStock(config) {
+    var selected = currentVariant(config);
+    if (selected) return selected.data.available !== false;
+    return config.productAvailable !== false;
+  }
+
+  function fillTemplate(template, values) {
+    var text = String(template || "");
+    Object.keys(values).forEach(function (key) {
+      text = text.split("{" + key + "}").join(values[key]);
+    });
+    return text;
+  }
+
+  /** Rellena {producto}, {precio} y {url} con la variante elegida, si la hay. */
   function buildMessage(config) {
     // El botón flotante fuera de una ficha de producto no tiene qué sustituir
     if (!config.productUrl || !config.productTitle) {
@@ -177,47 +233,54 @@
 
     var label = config.productTitle;
     var url = config.productUrl;
-    var variantId = currentVariantId();
-    var variant = variantId ? (config.variants || {})[variantId] : null;
+    var price = config.productPrice || "";
+    var selected = currentVariant(config);
 
-    if (variant) {
-      label = label + " (" + (variant.title || "") + ")";
-      url = url + (url.indexOf("?") === -1 ? "?" : "&") + "variant=" + variantId;
+    if (selected) {
+      label = label + " (" + (selected.data.title || "") + ")";
+      url = url + (url.indexOf("?") === -1 ? "?" : "&") + "variant=" + selected.id;
+      if (selected.data.price) price = selected.data.price;
     }
 
-    return String(config.messageTemplate)
-      .split("{producto}")
-      .join(label)
-      .split("{url}")
-      .join(url);
+    return fillTemplate(config.messageTemplate, {
+      producto: label,
+      precio: price,
+      url: url,
+    });
   }
 
-  /** ¿Hay stock de lo que el cliente tiene seleccionado ahora mismo? */
-  function isInStock(config) {
-    var variantId = currentVariantId();
-    var variant = variantId ? (config.variants || {})[variantId] : null;
-    if (variant) return variant.available !== false;
-    return config.productAvailable !== false;
+  function buildLink(vendor, message) {
+    return (
+      "https://wa.me/" + vendor.phone + "?text=" + encodeURIComponent(message)
+    );
   }
+
+  /* ------------------------------------------------------------------ */
+  /* Estadísticas                                                        */
+  /* ------------------------------------------------------------------ */
 
   /**
    * Avisa al backend de la app de que este vendedor recibió un clic.
    * Va con sendBeacon para que el envío sobreviva a la navegación hacia
    * WhatsApp; si algo falla, el cliente se va igual a su chat.
    */
-  function trackClick(endpoint, vendor) {
-    if (!endpoint) return;
-    var body = JSON.stringify({ name: vendor.name, phone: vendor.phone });
+  function trackClick(config, vendor) {
+    if (!config.clickEndpoint) return;
+    var body = JSON.stringify({
+      name: vendor.name,
+      phone: vendor.phone,
+      product: config.productTitle || null,
+    });
 
     try {
       if (navigator.sendBeacon) {
         navigator.sendBeacon(
-          endpoint,
+          config.clickEndpoint,
           new Blob([body], { type: "application/json" }),
         );
         return;
       }
-      fetch(endpoint, {
+      fetch(config.clickEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: body,
@@ -227,6 +290,10 @@
       // Las estadísticas nunca deben interrumpir una venta
     }
   }
+
+  /* ------------------------------------------------------------------ */
+  /* Añadir al carrito                                                   */
+  /* ------------------------------------------------------------------ */
 
   function hideAddToCart(customSelector) {
     var selectors = ADD_TO_CART_SELECTORS.slice();
@@ -247,11 +314,15 @@
     });
   }
 
-  function setupBlock(block) {
-    if (block.dataset.mvwReady === "true") return;
+  /* ------------------------------------------------------------------ */
+  /* Bloques                                                             */
+  /* ------------------------------------------------------------------ */
 
-    var configElement = block.querySelector("[data-mvw-config]");
-    var button = block.querySelector("[data-mvw-button]");
+  function setupBlock(element) {
+    if (element.dataset.mvwReady === "true") return;
+
+    var configElement = element.querySelector("[data-mvw-config]");
+    var button = element.querySelector("[data-mvw-button]");
     if (!configElement || !button) return;
 
     var config;
@@ -260,17 +331,9 @@
     } catch (error) {
       return;
     }
+    if (!Array.isArray(config.vendors) || config.vendors.length === 0) return;
 
-    var allVendors = Array.isArray(config.vendors) ? config.vendors : [];
-    if (allVendors.length === 0) return;
-
-    var vendors = expandByWeight(
-      availableVendors(allVendors, config.shopUtcOffset),
-    );
-    var index = readIndex(vendors.length) % vendors.length;
-    var vendor = vendors[index];
-
-    var labelElement = block.querySelector("[data-mvw-label]");
+    var labelElement = element.querySelector("[data-mvw-label]");
     var behavior = config.outOfStockBehavior || "show";
 
     /**
@@ -283,7 +346,7 @@
       var inStock = isInStock(config);
 
       if (behavior === "hide") {
-        block.hidden = !inStock;
+        element.hidden = !inStock;
       } else if (behavior === "label" && labelElement) {
         labelElement.textContent = inStock
           ? config.defaultLabel
@@ -292,40 +355,58 @@
     }
 
     // Sustituye el enlace de reserva que ya venía renderizado desde Liquid
-    function refreshLink() {
-      button.href = buildLink(vendor, buildMessage(config));
+    function refresh() {
+      var current = resolveVendor(config);
+      if (current) {
+        button.href = buildLink(current.vendor, buildMessage(config));
+      }
       applyStockState();
     }
 
-    refreshLink();
-
-    // Si el cliente cambia de talla o color, el enlace se actualiza
-    var productForm = document.querySelector('form[action*="/cart/add"]');
-    if (productForm) {
-      productForm.addEventListener("change", function () {
-        // Algunos temas actualizan el campo oculto justo después del evento
-        window.setTimeout(refreshLink, 0);
-      });
-    }
-
     button.addEventListener("click", function () {
-      // Momento decisivo: se recalcula por si el tema cambió la variante
-      // sin disparar un evento que hayamos escuchado
-      refreshLink();
-      advanceIndex(index, vendors.length);
-      trackClick(config.clickEndpoint, vendor);
+      // Momento decisivo: se resuelve todo aquí por si el tema cambió la
+      // variante sin avisar o si otro botón de la página ya avanzó el turno
+      var current = resolveVendor(config);
+      if (!current) return;
+
+      button.href = buildLink(current.vendor, buildMessage(config));
+      advanceIndex(current.index, current.total);
+      trackClick(config, current.vendor);
+
+      // El resto de botones de la página pasan al siguiente vendedor
+      blocks.forEach(function (entry) {
+        if (entry.element !== element) entry.refresh();
+      });
     });
 
     if (config.hideAddToCart) {
       hideAddToCart(config.customSelector);
     }
 
-    block.dataset.mvwReady = "true";
+    blocks.push({ element: element, refresh: refresh });
+    element.dataset.mvwReady = "true";
+    refresh();
+  }
+
+  function refreshAll() {
+    blocks.forEach(function (entry) {
+      entry.refresh();
+    });
   }
 
   function init() {
-    var blocks = document.querySelectorAll("[data-mvw-block]");
-    Array.prototype.forEach.call(blocks, setupBlock);
+    var found = document.querySelectorAll("[data-mvw-block]");
+    Array.prototype.forEach.call(found, setupBlock);
+
+    // Si el cliente cambia de talla o color, los enlaces se actualizan
+    var productForm = document.querySelector('form[action*="/cart/add"]');
+    if (productForm && productForm.dataset.mvwWatched !== "true") {
+      productForm.dataset.mvwWatched = "true";
+      productForm.addEventListener("change", function () {
+        // Algunos temas actualizan el campo oculto justo después del evento
+        window.setTimeout(refreshAll, 0);
+      });
+    }
   }
 
   if (document.readyState === "loading") {

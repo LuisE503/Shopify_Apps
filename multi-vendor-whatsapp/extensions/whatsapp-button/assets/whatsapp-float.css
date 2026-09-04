@@ -84,3 +84,9 @@
     transform: none;
   }
 }
+
+@media screen and (max-width: 749px) {
+  .mvw-float--hide-mobile {
+    display: none;
+  }
+}

@@ -39,8 +39,9 @@ model VendorClick {
   id          String   @id @default(cuid())
   shop        String
   vendorName  String
-  vendorPhone String
-  createdAt   DateTime @default(now())
+  vendorPhone  String
+  productTitle String?
+  createdAt    DateTime @default(now())
 
   @@index([shop, createdAt])
 }

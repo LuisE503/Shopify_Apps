@@ -42,19 +42,22 @@
   {%- assign default_message = 'Hola, me interesa este producto: {producto} - {url}' -%}
   {%- assign product_title_json = 'null' -%}
   {%- assign product_url_json = 'null' -%}
+  {%- assign product_price_json = 'null' -%}
   {%- capture variants_json -%}{}{%- endcapture -%}
 
   {%- if product -%}
     {%- assign message_template = app.metafields.whatsapp_router.message.value | default: default_message -%}
     {%- assign base_product_url = shop.url | append: product.url -%}
+    {%- assign product_price = product.selected_or_first_available_variant.price | money -%}
     {%- capture product_title_json -%}{{ product.title | json }}{%- endcapture -%}
     {%- capture product_url_json -%}{{ base_product_url | json }}{%- endcapture -%}
+    {%- capture product_price_json -%}{{ product_price | json }}{%- endcapture -%}
     {%- capture variants_json -%}
       {
       {%- assign variant_separator = '' -%}
       {%- unless product.has_only_default_variant -%}
         {%- for variant in product.variants -%}
-          {{ variant_separator }}"{{ variant.id }}": {"title": {{ variant.title | json }}, "available": {{ variant.available | json }}}
+          {{ variant_separator }}"{{ variant.id }}": {"title": {{ variant.title | json }}, "price": {{ variant.price | money | json }}, "available": {{ variant.available | json }}}
           {%- assign variant_separator = ',' -%}
         {%- endfor -%}
       {%- endunless -%}
@@ -68,7 +71,10 @@
       {%- assign product_label = product.title | append: ' (' | append: selected_variant.title | append: ')' -%}
       {%- assign product_url = base_product_url | append: '?variant=' | append: selected_variant.id -%}
     {%- endunless -%}
-    {%- assign whatsapp_message = message_template | replace: '{producto}', product_label | replace: '{url}', product_url -%}
+    {%- assign whatsapp_message = message_template
+      | replace: '{producto}', product_label
+      | replace: '{precio}', product_price
+      | replace: '{url}', product_url -%}
   {%- else -%}
     {%- assign message_template = block.settings.generic_message -%}
     {%- assign whatsapp_message = message_template -%}
@@ -86,7 +92,7 @@
   {{ 'whatsapp-float.css' | asset_url | stylesheet_tag }}
 
   <div
-    class="mvw-float mvw-float--{{ block.settings.position }}"
+    class="mvw-float mvw-float--{{ block.settings.position }}{% if block.settings.hide_on_mobile %} mvw-float--hide-mobile{% endif %}"
     data-mvw-block
     style="
       --mvw-bg: {{ block.settings.bg_color }};
@@ -105,6 +111,7 @@
         "messageTemplate": {{ message_template | json }},
         "productTitle": {{ product_title_json }},
         "productUrl": {{ product_url_json }},
+        "productPrice": {{ product_price_json }},
         "variants": {{ variants_json }},
         "hideAddToCart": false,
         "customSelector": null
@@ -234,6 +241,13 @@
     {
       "type": "header",
       "content": "Dónde mostrarlo"
+    },
+    {
+      "type": "checkbox",
+      "id": "hide_on_mobile",
+      "label": "Ocultarlo en celular",
+      "info": "Útil si tu tema ya muestra una barra fija de compra en pantallas pequeñas.",
+      "default": false
     },
     {
       "type": "checkbox",

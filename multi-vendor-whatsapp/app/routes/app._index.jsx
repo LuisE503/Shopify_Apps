@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { useEffect, useMemo, useState } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -16,12 +17,21 @@ const MAX_MESSAGE_LENGTH = 500;
 const MIN_WEIGHT = 1;
 const MAX_WEIGHT = 5;
 const WEIGHT_OPTIONS = [1, 2, 3, 4, 5];
+const STATS_DAYS = 30;
+const TOP_PRODUCTS = 5;
 
 const DEFAULT_MESSAGE = "Hola, me interesa este producto: {producto} - {url}";
 
 // Ejemplo usado para previsualizar el mensaje y probar los números
-const SAMPLE_PRODUCT = "Camiseta Azul";
+const SAMPLE_PRODUCT = "Camiseta Azul (Talla M)";
+const SAMPLE_PRICE = "$12.00";
 const SAMPLE_URL = "https://tu-tienda.com/products/camiseta-azul";
+
+// Los enlaces directos al editor de temas necesitan el identificador de la
+// extensión, que vive en su propio archivo de configuración
+const EXTENSION_TOML = "extensions/whatsapp-button/shopify.extension.toml";
+const PRODUCT_BLOCK_HANDLE = "whatsapp_button";
+const FLOAT_BLOCK_HANDLE = "whatsapp_float";
 
 // Lunes primero, como se lee un horario en LATAM. El valor coincide con
 // Date.getDay() en JavaScript (0 = domingo), que es lo que usa el storefront.
@@ -35,6 +45,7 @@ const WEEK_DAYS = [
   { value: 0, label: "Dom" },
 ];
 const WEEKDAYS_ONLY = [1, 2, 3, 4, 5];
+const INTL_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const TIME_OPTIONS = (() => {
   const options = [];
@@ -53,10 +64,11 @@ const digitsOnly = (value) => String(value ?? "").replace(/\D/g, "");
 const ALLOWED_PHONE_CHARS = /^[\d\s+().-]*$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-const renderMessage = (template, product, url) =>
-  String(template ?? "")
-    .replaceAll("{producto}", product)
-    .replaceAll("{url}", url);
+const renderMessage = (template, values) =>
+  Object.entries(values).reduce(
+    (text, [key, value]) => text.replaceAll(`{${key}}`, value),
+    String(template ?? ""),
+  );
 
 // Horario guardado -> horario normalizado (null = disponible siempre)
 const toHours = (hours) => {
@@ -88,7 +100,7 @@ const toVendor = (v) => ({
 });
 
 // Contador módulo-level: garantiza ids de fila únicos y estables para React.
-// Los campos saved* guardan lo que está en Shopify para marcar qué fila cambió.
+// El campo `saved` guarda lo que está en Shopify para marcar qué fila cambió.
 let rowIdCounter = 0;
 const makeRows = (list) =>
   (list.length > 0 ? list : [{ name: "", phone: "", active: true }]).map(
@@ -160,56 +172,186 @@ const describeSchedule = (row) => {
   return `${labels.join(", ")} · ${row.start}–${row.end}${crossesMidnight ? " (del día siguiente)" : ""}`;
 };
 
-const STATS_DAYS = 30;
+/* -------------------------------------------------------------------- */
+/* Hora de la tienda y turnos (misma lógica que el storefront)           */
+/* -------------------------------------------------------------------- */
 
-/** Clics de los últimos 30 días agrupados por número de vendedor. */
-const loadClickStats = async (shop) => {
-  const since = new Date(Date.now() - STATS_DAYS * 24 * 60 * 60 * 1000);
-
+/** Día y minutos actuales en el huso horario de la tienda. */
+const shopClock = (timeZone) => {
   try {
-    const grouped = await db.vendorClick.groupBy({
-      by: ["vendorPhone"],
-      where: { shop, createdAt: { gte: since } },
-      _count: { _all: true },
-    });
-
-    return grouped.reduce((counts, row) => {
-      counts[row.vendorPhone] = row._count._all;
-      return counts;
-    }, {});
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date());
+    const read = (type) => parts.find((p) => p.type === type)?.value;
+    const day = INTL_WEEKDAYS.indexOf(read("weekday"));
+    const hour = Number(read("hour")) % 24;
+    const minute = Number(read("minute"));
+    if (day < 0 || Number.isNaN(hour) || Number.isNaN(minute)) return null;
+    return { day, minutes: hour * 60 + minute };
   } catch {
-    // Las estadísticas son un extra: si fallan, el panel debe seguir abriendo
-    return {};
+    return null;
   }
 };
+
+const toMinutes = (time) => {
+  const [h, m] = String(time).split(":").map(Number);
+  return h * 60 + m;
+};
+
+const isOnDuty = (hours, clock) => {
+  if (!hours || !clock) return true;
+  const start = toMinutes(hours.start);
+  const end = toMinutes(hours.end);
+  if (start === end) return true;
+  const inDays = (day) => hours.days.length === 0 || hours.days.includes(day);
+
+  if (start < end) {
+    return inDays(clock.day) && clock.minutes >= start && clock.minutes < end;
+  }
+  // Turno nocturno que cruza la medianoche
+  if (clock.minutes >= start) return inDays(clock.day);
+  return clock.minutes < end && inDays((clock.day + 6) % 7);
+};
+
+const formatClock = (clock) =>
+  clock
+    ? `${String(Math.floor(clock.minutes / 60)).padStart(2, "0")}:${String(clock.minutes % 60).padStart(2, "0")}`
+    : null;
+
+/* -------------------------------------------------------------------- */
+/* Estadísticas                                                          */
+/* -------------------------------------------------------------------- */
+
+const relativeTime = (isoDate) => {
+  if (!isoDate) return null;
+  const minutes = Math.max(
+    0,
+    Math.round((Date.now() - new Date(isoDate).getTime()) / 60000),
+  );
+  if (minutes < 1) return "hace un momento";
+  if (minutes < 60) return `hace ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `hace ${hours} h`;
+  const days = Math.round(hours / 24);
+  return `hace ${days} día${days === 1 ? "" : "s"}`;
+};
+
+/** Clics de los últimos 30 días: por vendedor, y los productos más pedidos. */
+const loadClickStats = async (shop) => {
+  const since = new Date(Date.now() - STATS_DAYS * 24 * 60 * 60 * 1000);
+  const empty = { byPhone: {}, topProducts: [], total: 0 };
+
+  try {
+    const [byVendor, byProduct] = await Promise.all([
+      db.vendorClick.groupBy({
+        by: ["vendorPhone"],
+        where: { shop, createdAt: { gte: since } },
+        _count: { _all: true },
+        _max: { createdAt: true },
+      }),
+      db.vendorClick.groupBy({
+        by: ["productTitle"],
+        where: { shop, createdAt: { gte: since }, productTitle: { not: null } },
+        _count: { _all: true },
+        orderBy: { _count: { productTitle: "desc" } },
+        take: TOP_PRODUCTS,
+      }),
+    ]);
+
+    const byPhone = {};
+    let total = 0;
+    for (const row of byVendor) {
+      byPhone[row.vendorPhone] = {
+        count: row._count._all,
+        lastClickAt: row._max.createdAt?.toISOString() ?? null,
+      };
+      total += row._count._all;
+    }
+
+    return {
+      byPhone,
+      total,
+      topProducts: byProduct.map((row) => ({
+        title: row.productTitle,
+        count: row._count._all,
+      })),
+    };
+  } catch {
+    // Las estadísticas son un extra: si fallan, el panel debe seguir abriendo
+    return empty;
+  }
+};
+
+/* -------------------------------------------------------------------- */
+/* Enlaces directos al editor de temas                                   */
+/* -------------------------------------------------------------------- */
+
+let cachedExtensionUid;
+const extensionUid = () => {
+  if (cachedExtensionUid !== undefined) return cachedExtensionUid;
+  try {
+    const toml = readFileSync(EXTENSION_TOML, "utf8");
+    cachedExtensionUid = /uid\s*=\s*"([^"]+)"/.exec(toml)?.[1] ?? null;
+  } catch {
+    cachedExtensionUid = null;
+  }
+  return cachedExtensionUid;
+};
+
+const themeEditorLinks = (shop) => {
+  const uid = extensionUid();
+  if (!uid) return null;
+  const editor = `https://${shop}/admin/themes/current/editor`;
+  return {
+    addProductBlock: `${editor}?template=product&addAppBlockId=${uid}/${PRODUCT_BLOCK_HANDLE}&target=mainSection`,
+    activateFloat: `${editor}?context=apps&activateAppId=${uid}/${FLOAT_BLOCK_HANDLE}`,
+  };
+};
+
+/* -------------------------------------------------------------------- */
+/* Loader y action                                                       */
+/* -------------------------------------------------------------------- */
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
 
-  const clicksByPhone = await loadClickStats(session.shop);
-
-  const response = await admin.graphql(
-    `#graphql
-      query getWhatsappConfig($namespace: String!) {
-        currentAppInstallation {
-          vendors: metafield(namespace: $namespace, key: "vendors") {
-            jsonValue
+  const [stats, response] = await Promise.all([
+    loadClickStats(session.shop),
+    admin.graphql(
+      `#graphql
+        query getWhatsappConfig($namespace: String!) {
+          shop {
+            ianaTimezone
           }
-          message: metafield(namespace: $namespace, key: "message") {
-            value
+          currentAppInstallation {
+            vendors: metafield(namespace: $namespace, key: "vendors") {
+              jsonValue
+            }
+            message: metafield(namespace: $namespace, key: "message") {
+              value
+            }
           }
-        }
-      }`,
-    { variables: { namespace: METAFIELD_NAMESPACE } },
-  );
+        }`,
+      { variables: { namespace: METAFIELD_NAMESPACE } },
+    ),
+  ]);
   const responseJson = await response.json();
   const installation = responseJson.data?.currentAppInstallation;
   const storedVendors = installation?.vendors?.jsonValue;
+  const timeZone = responseJson.data?.shop?.ianaTimezone ?? null;
 
   return {
+    shop: session.shop,
     vendors: Array.isArray(storedVendors) ? storedVendors.map(toVendor) : [],
     message: installation?.message?.value || DEFAULT_MESSAGE,
-    clicksByPhone,
+    stats,
+    timeZone,
+    clock: shopClock(timeZone),
+    editorLinks: themeEditorLinks(session.shop),
   };
 };
 
@@ -311,26 +453,43 @@ export const action = async ({ request }) => {
   };
 };
 
+/* -------------------------------------------------------------------- */
+/* Componentes                                                           */
+/* -------------------------------------------------------------------- */
+
 /**
  * Tarjeta de un vendedor.
  *
  * @param row            fila del estado local (ver makeRows)
  * @param errors         errores de esta fila: { name, phone, hours, days }
  * @param previewMessage mensaje de ejemplo para el enlace de prueba
+ * @param stats          { count, lastClickAt } de este número, si hay clics
+ * @param share          fracción de la rotación que le corresponde (0-1)
+ * @param onDuty         true/false si tiene horario, null si no
  * @param onChange       (id, campo, valor) => void
  * @param onRemove       (id) => void
  */
 /* eslint-disable react/prop-types -- el proyecto es JavaScript y no usa
    prop-types en ninguna ruta; los props quedan documentados arriba */
-function VendorRow({ row, errors, previewMessage, clicks, onChange, onRemove }) {
+function VendorRow({
+  row,
+  errors,
+  previewMessage,
+  stats,
+  share,
+  onDuty,
+  onChange,
+  onRemove,
+}) {
   const phoneDigits = digitsOnly(row.phone);
   const canTest = !errors.phone && phoneDigits.length >= MIN_PHONE_DIGITS;
   const testUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(previewMessage)}`;
+  const sharePercent = Math.round(share * 100);
 
   const toggleDay = (day) => {
     const days = row.days.includes(day)
       ? row.days.filter((d) => d !== day)
-      : [...row.days, day].sort();
+      : [...row.days, day].sort((a, b) => a - b);
     onChange(row.id, "days", days);
   };
 
@@ -355,7 +514,11 @@ function VendorRow({ row, errors, previewMessage, clicks, onChange, onRemove }) 
           ></s-text-field>
           <s-select
             label="Prioridad"
-            details="Turnos por vuelta"
+            details={
+              row.active && sharePercent > 0
+                ? `≈ ${sharePercent}% de la rotación`
+                : "Turnos por vuelta"
+            }
             value={String(row.weight)}
             onChange={(e) =>
               onChange(row.id, "weight", Number(e.currentTarget.value))
@@ -382,8 +545,15 @@ function VendorRow({ row, errors, previewMessage, clicks, onChange, onRemove }) 
               onChange(row.id, "scheduled", e.currentTarget.checked)
             }
           ></s-switch>
-          {clicks > 0 && (
-            <s-badge tone="info">{`${clicks} clic(s) en ${STATS_DAYS} días`}</s-badge>
+          {row.active && row.scheduled && onDuty !== null && (
+            <s-badge tone={onDuty ? "success" : "auto"}>
+              {onDuty ? "En turno ahora" : "Fuera de turno"}
+            </s-badge>
+          )}
+          {stats && (
+            <s-badge tone="info">
+              {`${stats.count} clic(s) · ${relativeTime(stats.lastClickAt)}`}
+            </s-badge>
           )}
           {isRowDirty(row) && <s-badge tone="warning">Sin guardar</s-badge>}
           {canTest && (
@@ -444,9 +614,7 @@ function VendorRow({ row, errors, previewMessage, clicks, onChange, onRemove }) 
                 ))}
               </s-stack>
 
-              {errors.days && (
-                <s-text tone="critical">{errors.days}</s-text>
-              )}
+              {errors.days && <s-text tone="critical">{errors.days}</s-text>}
               <s-text tone="neutral">{describeSchedule(row)}</s-text>
             </s-stack>
           </s-box>
@@ -456,13 +624,126 @@ function VendorRow({ row, errors, previewMessage, clicks, onChange, onRemove }) 
   );
 }
 
+/**
+ * Guía de puesta en marcha con enlaces que abren el editor de temas con el
+ * bloque ya seleccionado. Es lo que más dudas genera al instalar la app.
+ *
+ * @param hasVendors   ya hay al menos un vendedor activo guardado
+ * @param links        { addProductBlock, activateFloat } o null
+ * @param storefront   URL de la tienda para probar
+ */
+function SetupGuide({ hasVendors, links, storefront }) {
+  return (
+    <s-section heading="Puesta en marcha">
+      <s-stack direction="block" gap="base">
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-badge tone={hasVendors ? "success" : "warning"}>1</s-badge>
+          <s-text>
+            {hasVendors
+              ? "Vendedores guardados."
+              : "Guarda al menos un vendedor activo (abajo)."}
+          </s-text>
+        </s-stack>
+
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-badge tone="info">2</s-badge>
+          <s-text>Coloca el botón en la página de producto.</s-text>
+          {links && (
+            <s-button
+              variant="secondary"
+              href={links.addProductBlock}
+              target="_blank"
+            >
+              Abrir el editor con el bloque
+            </s-button>
+          )}
+        </s-stack>
+
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-badge tone="info">3</s-badge>
+          <s-text>Opcional: activa el botón flotante en toda la tienda.</s-text>
+          {links && (
+            <s-button
+              variant="secondary"
+              href={links.activateFloat}
+              target="_blank"
+            >
+              Activar botón flotante
+            </s-button>
+          )}
+        </s-stack>
+
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-badge tone="info">4</s-badge>
+          <s-text>Pruébalo en tu tienda como lo vería un cliente.</s-text>
+          <s-button variant="tertiary" href={storefront} target="_blank">
+            Ver mi tienda
+          </s-button>
+        </s-stack>
+
+        {!links && (
+          <s-text tone="neutral">
+            En el editor de temas: página de producto → Agregar bloque →
+            Aplicaciones → Botón de WhatsApp. El flotante está en
+            Incrustaciones de aplicación.
+          </s-text>
+        )}
+      </s-stack>
+    </s-section>
+  );
+}
+
+/**
+ * Actividad de los últimos 30 días.
+ *
+ * @param stats  { total, topProducts }
+ */
+function ActivitySection({ stats }) {
+  if (stats.total === 0) {
+    return (
+      <s-section slot="aside" heading={`Actividad (${STATS_DAYS} días)`}>
+        <s-text tone="neutral">
+          Aún no hay clics registrados. Aparecerán aquí en cuanto un cliente
+          pulse el botón en tu tienda.
+        </s-text>
+      </s-section>
+    );
+  }
+
+  return (
+    <s-section slot="aside" heading={`Actividad (${STATS_DAYS} días)`}>
+      <s-stack direction="block" gap="base">
+        <s-text>
+          <s-text type="strong">{stats.total}</s-text> clic(s) en total. El
+          detalle por vendedor está en cada tarjeta.
+        </s-text>
+        {stats.topProducts.length > 0 && (
+          <s-stack direction="block" gap="small-300">
+            <s-text type="strong">Productos más consultados</s-text>
+            <s-ordered-list>
+              {stats.topProducts.map((product) => (
+                <s-list-item key={product.title}>
+                  {product.title} · {product.count}
+                </s-list-item>
+              ))}
+            </s-ordered-list>
+          </s-stack>
+        )}
+      </s-stack>
+    </s-section>
+  );
+}
 /* eslint-enable react/prop-types */
 
 export default function Index() {
   const {
+    shop,
     vendors: vendorsOnLoad,
     message: messageOnLoad,
-    clicksByPhone,
+    stats,
+    timeZone,
+    clock,
+    editorLinks,
   } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
@@ -546,16 +827,23 @@ export default function Index() {
   );
 
   const previewMessage = useMemo(
-    () => renderMessage(message, SAMPLE_PRODUCT, SAMPLE_URL),
+    () =>
+      renderMessage(message, {
+        producto: SAMPLE_PRODUCT,
+        precio: SAMPLE_PRICE,
+        url: SAMPLE_URL,
+      }),
     [message],
   );
 
+  // Reparto teórico entre los activos, según la prioridad de cada uno
+  const totalWeight = rows
+    .filter((r) => r.active && (r.name.trim() || r.phone.trim()))
+    .reduce((sum, r) => sum + toWeight(r.weight), 0);
+
   const activeCount = saved.filter((v) => v.active).length;
   const scheduledCount = saved.filter((v) => v.active && v.hours).length;
-  const totalClicks = Object.values(clicksByPhone).reduce(
-    (sum, count) => sum + count,
-    0,
-  );
+  const shopTime = formatClock(clock);
 
   // La Save Bar oficial del admin aparece solo cuando hay cambios sin guardar
   useEffect(() => {
@@ -624,11 +912,17 @@ export default function Index() {
 
   return (
     <s-page heading="Multi-Vendor WhatsApp Router">
+      <SetupGuide
+        hasVendors={activeCount > 0}
+        links={editorLinks}
+        storefront={`https://${shop}`}
+      />
+
       <s-section heading="Vendedores de WhatsApp">
         <s-paragraph>
           Agrega los números de tus vendedores. Los clics de tus clientes en el
-          botón &quot;Comprar por WhatsApp&quot; se repartirán equitativamente
-          entre los vendedores activos que estén en su horario (round robin).
+          botón &quot;Comprar por WhatsApp&quot; se repartirán entre los
+          vendedores activos que estén en su horario, según su prioridad.
         </s-paragraph>
 
         <s-stack direction="inline" gap="base" alignItems="center">
@@ -638,10 +932,8 @@ export default function Index() {
           {scheduledCount > 0 && (
             <s-badge tone="info">{`${scheduledCount} con horario`}</s-badge>
           )}
-          {totalClicks > 0 && (
-            <s-badge tone="info">
-              {`${totalClicks} clic(s) en ${STATS_DAYS} días`}
-            </s-badge>
+          {shopTime && (
+            <s-badge tone="auto">{`Hora de tu tienda: ${shopTime}`}</s-badge>
           )}
           {isDirty && <s-badge tone="warning">Cambios sin guardar</s-badge>}
         </s-stack>
@@ -660,17 +952,28 @@ export default function Index() {
         )}
 
         <s-stack direction="block" gap="base">
-          {rows.map((row) => (
-            <VendorRow
-              key={row.id}
-              row={row}
-              errors={validation.errors.get(row.id) ?? {}}
-              previewMessage={previewMessage}
-              clicks={clicksByPhone[digitsOnly(row.phone)] ?? 0}
-              onChange={updateRow}
-              onRemove={removeRow}
-            />
-          ))}
+          {rows.map((row) => {
+            const hours = row.scheduled
+              ? toHours({ start: row.start, end: row.end, days: row.days })
+              : null;
+            return (
+              <VendorRow
+                key={row.id}
+                row={row}
+                errors={validation.errors.get(row.id) ?? {}}
+                previewMessage={previewMessage}
+                stats={stats.byPhone[digitsOnly(row.phone)] ?? null}
+                share={
+                  row.active && totalWeight > 0
+                    ? toWeight(row.weight) / totalWeight
+                    : 0
+                }
+                onDuty={hours && clock ? isOnDuty(hours, clock) : null}
+                onChange={updateRow}
+                onRemove={removeRow}
+              />
+            );
+          })}
         </s-stack>
 
         <s-stack direction="inline" gap="base">
@@ -683,8 +986,9 @@ export default function Index() {
       <s-section heading="Mensaje que enviará el cliente">
         <s-paragraph>
           Este es el texto que aparecerá escrito en WhatsApp cuando el cliente
-          pulse el botón. Usa {"{producto}"} y {"{url}"} para insertar
-          automáticamente el nombre del producto y su enlace.
+          pulse el botón. Puedes usar {"{producto}"}, {"{precio}"} y{" "}
+          {"{url}"}: se reemplazan solos por el producto (con su talla o
+          color), su precio y su enlace.
         </s-paragraph>
 
         <s-text-area
@@ -706,11 +1010,13 @@ export default function Index() {
         </s-box>
       </s-section>
 
+      <ActivitySection stats={stats} />
+
       <s-section slot="aside" heading="¿Cómo funciona?">
         <s-unordered-list>
           <s-list-item>
-            Cada vendedor activo recibe los clics por turnos, de forma
-            secuencial y equitativa.
+            Cada clic va al siguiente vendedor activo de la lista, por turnos.
+            La prioridad da más turnos por vuelta a quien la tenga más alta.
           </s-list-item>
           <s-list-item>
             El número debe incluir el código de país, sin el signo +. Ejemplo
@@ -718,11 +1024,10 @@ export default function Index() {
           </s-list-item>
           <s-list-item>
             Activa &quot;Horario&quot; para que un vendedor solo reciba clics
-            en sus días y horas. La hora es la de tu tienda.
-          </s-list-item>
-          <s-list-item>
-            Si a una hora nadie está en turno, se reparte entre todos los
-            activos: nunca se pierde una venta.
+            en sus días y horas
+            {timeZone ? ` (hora de ${timeZone})` : ""}. Si a una hora nadie
+            está en turno, se reparte entre todos los activos: nunca se pierde
+            una venta.
           </s-list-item>
           <s-list-item>
             Usa &quot;Probar en WhatsApp&quot; para confirmar que el número es
