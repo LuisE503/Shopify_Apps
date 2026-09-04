@@ -1,0 +1,245 @@
+{%- comment -%}
+  Botón flotante de WhatsApp, visible en toda la tienda.
+
+  Es un "app embed": el comerciante lo activa desde Editor de temas →
+  Incrustaciones de aplicación, y aparece en todas las páginas sin tener que
+  colocarlo bloque a bloque. Comparte el mismo reparto round robin que el
+  botón de la ficha de producto (assets/whatsapp-router.js).
+{%- endcomment -%}
+
+{%- assign vendors = app.metafields.whatsapp_router.vendors.value -%}
+
+{%- assign active_count = 0 -%}
+{%- for vendor in vendors -%}
+  {%- if vendor.phone != blank and vendor.active != false -%}
+    {%- assign active_count = active_count | plus: 1 -%}
+  {%- endif -%}
+{%- endfor -%}
+
+{%- assign hide_here = false -%}
+{%- if block.settings.hide_on_product and product -%}
+  {%- assign hide_here = true -%}
+{%- endif -%}
+
+{%- if active_count > 0 and hide_here == false -%}
+
+  {%- capture vendors_json -%}
+    [
+    {%- assign separator = '' -%}
+    {%- for vendor in vendors -%}
+      {%- if vendor.phone != blank and vendor.active != false -%}
+        {{ separator }}{"name": {{ vendor.name | json }}, "phone": {{ vendor.phone | json }}}
+        {%- assign separator = ',' -%}
+      {%- endif -%}
+    {%- endfor -%}
+    ]
+  {%- endcapture -%}
+
+  {%- comment -%}
+    En una ficha de producto se usa la plantilla del comerciante con el
+    producto; en el resto de páginas, un mensaje general.
+  {%- endcomment -%}
+  {%- assign default_message = 'Hola, me interesa este producto: {producto} - {url}' -%}
+  {%- assign product_title_json = 'null' -%}
+  {%- assign product_url_json = 'null' -%}
+  {%- capture variants_json -%}{}{%- endcapture -%}
+
+  {%- if product -%}
+    {%- assign message_template = app.metafields.whatsapp_router.message.value | default: default_message -%}
+    {%- assign base_product_url = shop.url | append: product.url -%}
+    {%- capture product_title_json -%}{{ product.title | json }}{%- endcapture -%}
+    {%- capture product_url_json -%}{{ base_product_url | json }}{%- endcapture -%}
+    {%- capture variants_json -%}
+      {
+      {%- assign variant_separator = '' -%}
+      {%- unless product.has_only_default_variant -%}
+        {%- for variant in product.variants -%}
+          {{ variant_separator }}"{{ variant.id }}": {{ variant.title | json }}
+          {%- assign variant_separator = ',' -%}
+        {%- endfor -%}
+      {%- endunless -%}
+      }
+    {%- endcapture -%}
+
+    {%- assign product_label = product.title -%}
+    {%- assign product_url = base_product_url -%}
+    {%- unless product.has_only_default_variant -%}
+      {%- assign selected_variant = product.selected_or_first_available_variant -%}
+      {%- assign product_label = product.title | append: ' (' | append: selected_variant.title | append: ')' -%}
+      {%- assign product_url = base_product_url | append: '?variant=' | append: selected_variant.id -%}
+    {%- endunless -%}
+    {%- assign whatsapp_message = message_template | replace: '{producto}', product_label | replace: '{url}', product_url -%}
+  {%- else -%}
+    {%- assign message_template = block.settings.generic_message -%}
+    {%- assign whatsapp_message = message_template -%}
+  {%- endif -%}
+
+  {%- assign fallback_phone = '' -%}
+  {%- for vendor in vendors -%}
+    {%- if fallback_phone == '' and vendor.phone != blank and vendor.active != false -%}
+      {%- assign fallback_phone = vendor.phone -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- assign encoded_message = whatsapp_message | url_encode | replace: '+', '%20' -%}
+  {%- assign fallback_link = 'https://wa.me/' | append: fallback_phone | append: '?text=' | append: encoded_message -%}
+
+  {{ 'whatsapp-float.css' | asset_url | stylesheet_tag }}
+
+  <div
+    class="mvw-float mvw-float--{{ block.settings.position }}"
+    data-mvw-block
+    style="
+      --mvw-bg: {{ block.settings.bg_color }};
+      --mvw-text: {{ block.settings.text_color }};
+      --mvw-float-size: {{ block.settings.button_size }}px;
+      --mvw-float-font: {{ block.settings.font_size }}px;
+      --mvw-float-side: {{ block.settings.offset_side }}px;
+      --mvw-float-bottom: {{ block.settings.offset_bottom }}px;
+    "
+  >
+    <script type="application/json" data-mvw-config>
+      {
+        "vendors": {{ vendors_json }},
+        "messageTemplate": {{ message_template | json }},
+        "productTitle": {{ product_title_json }},
+        "productUrl": {{ product_url_json }},
+        "variants": {{ variants_json }},
+        "hideAddToCart": false,
+        "customSelector": null
+      }
+    </script>
+
+    <a
+      class="mvw-float__button{% if block.settings.show_label == false or block.settings.label == blank %} mvw-float__button--icon-only{% endif %}"
+      data-mvw-button
+      href="{{ fallback_link }}"
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label="{{ block.settings.label | default: 'Comprar por WhatsApp' | escape }}"
+    >
+      <svg class="mvw-float__icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+        <path d="M17.47 14.38c-.3-.15-1.75-.86-2.02-.96-.27-.1-.47-.15-.67.15-.2.3-.77.96-.94 1.16-.17.2-.35.22-.64.08-.3-.15-1.25-.46-2.38-1.47-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.14-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.6-.92-2.2-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.79.37-.27.3-1.04 1.01-1.04 2.47s1.06 2.87 1.21 3.07c.15.2 2.1 3.2 5.08 4.49.71.3 1.26.49 1.69.63.71.22 1.36.19 1.87.12.57-.09 1.75-.72 2-1.41.25-.69.25-1.28.17-1.41-.07-.13-.27-.2-.57-.35zM12.05 21.5h-.01a9.44 9.44 0 0 1-4.8-1.32l-.35-.2-3.57.93.96-3.48-.23-.36a9.4 9.4 0 0 1-1.45-5.03c0-5.2 4.24-9.44 9.46-9.44 2.53 0 4.9.99 6.68 2.78a9.38 9.38 0 0 1 2.77 6.67c0 5.2-4.24 9.45-9.46 9.45zM20.46 3.53A11.35 11.35 0 0 0 12.05.02C5.79.02.7 5.1.7 11.35c0 2 .52 3.95 1.52 5.67L.6 23.02l6.13-1.6a11.33 11.33 0 0 0 5.42 1.38h.01c6.25 0 11.34-5.08 11.34-11.33 0-3.03-1.18-5.87-3.32-8.01z"/>
+      </svg>
+      {%- if block.settings.show_label and block.settings.label != blank -%}
+        <span class="mvw-float__label">{{ block.settings.label }}</span>
+      {%- endif -%}
+    </a>
+  </div>
+
+  <script src="{{ 'whatsapp-router.js' | asset_url }}" defer></script>
+
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Botón flotante de WhatsApp",
+  "target": "body",
+  "settings": [
+    {
+      "type": "paragraph",
+      "content": "Muestra un botón fijo de WhatsApp en todas las páginas de la tienda. Los clics se reparten entre los mismos vendedores del panel de la app."
+    },
+    {
+      "type": "checkbox",
+      "id": "show_label",
+      "label": "Mostrar texto junto al icono",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "label",
+      "label": "Texto del botón",
+      "default": "Escríbenos"
+    },
+    {
+      "type": "text",
+      "id": "generic_message",
+      "label": "Mensaje fuera de las fichas de producto",
+      "info": "Se usa en el inicio, colecciones y demás páginas. En una ficha de producto siempre se envía el mensaje configurado en la app, con el producto y la variante.",
+      "default": "Hola, quiero información sobre sus productos."
+    },
+    {
+      "type": "header",
+      "content": "Posición"
+    },
+    {
+      "type": "select",
+      "id": "position",
+      "label": "Esquina",
+      "options": [
+        { "value": "right", "label": "Abajo a la derecha" },
+        { "value": "left", "label": "Abajo a la izquierda" }
+      ],
+      "default": "right"
+    },
+    {
+      "type": "range",
+      "id": "offset_side",
+      "label": "Separación lateral",
+      "min": 0,
+      "max": 60,
+      "step": 2,
+      "unit": "px",
+      "default": 20
+    },
+    {
+      "type": "range",
+      "id": "offset_bottom",
+      "label": "Separación inferior",
+      "min": 0,
+      "max": 120,
+      "step": 2,
+      "unit": "px",
+      "default": 20,
+      "info": "Súbelo si tu tema ya tiene otro botón flotante en esa esquina."
+    },
+    {
+      "type": "header",
+      "content": "Apariencia"
+    },
+    {
+      "type": "range",
+      "id": "button_size",
+      "label": "Tamaño",
+      "min": 44,
+      "max": 80,
+      "step": 2,
+      "unit": "px",
+      "default": 56
+    },
+    {
+      "type": "range",
+      "id": "font_size",
+      "label": "Tamaño del texto",
+      "min": 12,
+      "max": 22,
+      "step": 1,
+      "unit": "px",
+      "default": 16
+    },
+    {
+      "type": "color",
+      "id": "bg_color",
+      "label": "Color de fondo",
+      "default": "#25D366"
+    },
+    {
+      "type": "color",
+      "id": "text_color",
+      "label": "Color del texto",
+      "default": "#FFFFFF"
+    },
+    {
+      "type": "header",
+      "content": "Dónde mostrarlo"
+    },
+    {
+      "type": "checkbox",
+      "id": "hide_on_product",
+      "label": "Ocultarlo en las fichas de producto",
+      "info": "Actívalo si ya colocaste el botón dentro de la página de producto y no quieres los dos a la vez.",
+      "default": false
+    }
+  ]
+}
+{% endschema %}

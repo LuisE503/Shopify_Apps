@@ -71,6 +71,11 @@
 
   /** Rellena {producto} y {url} añadiendo la variante elegida, si la hay. */
   function buildMessage(config) {
+    // El botón flotante fuera de una ficha de producto no tiene qué sustituir
+    if (!config.productUrl || !config.productTitle) {
+      return String(config.messageTemplate || "");
+    }
+
     var label = config.productTitle;
     var url = config.productUrl;
     var variants = config.variants || {};
