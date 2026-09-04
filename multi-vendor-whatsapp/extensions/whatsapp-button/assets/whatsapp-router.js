@@ -123,6 +123,32 @@
     return onDuty.length > 0 ? onDuty : vendors;
   }
 
+  function weightOf(vendor) {
+    var weight = parseInt(vendor.weight, 10);
+    if (isNaN(weight) || weight < 1) return 1;
+    return Math.min(weight, 5);
+  }
+
+  /**
+   * Reparte por rondas según la prioridad: con A(3) y B(1) el orden queda
+   * A, B, A, A. Intercalar en vez de repetir en bloque evita que un mismo
+   * vendedor reciba varios clientes seguidos.
+   */
+  function expandByWeight(vendors) {
+    var maxWeight = 1;
+    vendors.forEach(function (vendor) {
+      maxWeight = Math.max(maxWeight, weightOf(vendor));
+    });
+
+    var expanded = [];
+    for (var round = 0; round < maxWeight; round += 1) {
+      vendors.forEach(function (vendor) {
+        if (weightOf(vendor) > round) expanded.push(vendor);
+      });
+    }
+    return expanded;
+  }
+
   /**
    * Id de la variante que el cliente tiene seleccionada ahora mismo.
    * Los temas mantienen el parámetro ?variant= de la URL y el campo oculto
@@ -238,7 +264,9 @@
     var allVendors = Array.isArray(config.vendors) ? config.vendors : [];
     if (allVendors.length === 0) return;
 
-    var vendors = availableVendors(allVendors, config.shopUtcOffset);
+    var vendors = expandByWeight(
+      availableVendors(allVendors, config.shopUtcOffset),
+    );
     var index = readIndex(vendors.length) % vendors.length;
     var vendor = vendors[index];
 

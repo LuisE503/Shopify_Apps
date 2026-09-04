@@ -13,6 +13,9 @@ const MESSAGE_KEY = "message";
 const SAVE_BAR_ID = "vendors-save-bar";
 const MIN_PHONE_DIGITS = 8;
 const MAX_MESSAGE_LENGTH = 500;
+const MIN_WEIGHT = 1;
+const MAX_WEIGHT = 5;
+const WEIGHT_OPTIONS = [1, 2, 3, 4, 5];
 
 const DEFAULT_MESSAGE = "Hola, me interesa este producto: {producto} - {url}";
 
@@ -68,11 +71,19 @@ const toHours = (hours) => {
   return { start, end, days };
 };
 
+// Peso del reparto: cuántas veces entra este vendedor en cada vuelta
+const toWeight = (value) => {
+  const weight = Number.parseInt(value, 10);
+  if (!Number.isFinite(weight)) return 1;
+  return Math.min(Math.max(weight, MIN_WEIGHT), MAX_WEIGHT);
+};
+
 // Normaliza un vendedor venido de la API (campos ausentes = valores por defecto)
 const toVendor = (v) => ({
   name: String(v?.name ?? ""),
   phone: String(v?.phone ?? ""),
   active: v?.active !== false,
+  weight: toWeight(v?.weight),
   hours: toHours(v?.hours),
 });
 
@@ -88,6 +99,7 @@ const makeRows = (list) =>
         name: v.name ?? "",
         phone: v.phone ?? "",
         active: v.active !== false,
+        weight: toWeight(v.weight),
         scheduled: Boolean(hours),
         start: hours ? hours.start : "08:00",
         end: hours ? hours.end : "18:00",
@@ -96,6 +108,7 @@ const makeRows = (list) =>
           v.name ?? "",
           v.phone ?? "",
           v.active !== false,
+          toWeight(v.weight),
           hours,
         ]),
       };
@@ -108,6 +121,7 @@ const rowSignature = (row) =>
     row.name.trim(),
     row.phone.trim(),
     row.active,
+    toWeight(row.weight),
     row.scheduled
       ? toHours({ start: row.start, end: row.end, days: row.days })
       : null,
@@ -126,7 +140,13 @@ const visibleSignature = (rows) =>
 const savedSignature = (saved) =>
   JSON.stringify(
     saved.map((v) =>
-      JSON.stringify([v.name, v.phone, v.active, toHours(v.hours)]),
+      JSON.stringify([
+        v.name,
+        v.phone,
+        v.active,
+        toWeight(v.weight),
+        toHours(v.hours),
+      ]),
     ),
   );
 
@@ -212,6 +232,7 @@ export const action = async ({ request }) => {
       name: String(v?.name ?? "").trim(),
       phone: digitsOnly(v?.phone),
       active: v?.active !== false,
+      weight: toWeight(v?.weight),
       hours: toHours(v?.hours),
     }))
     .filter((v) => {
@@ -316,7 +337,7 @@ function VendorRow({ row, errors, previewMessage, clicks, onChange, onRemove }) 
   return (
     <s-box padding="base" borderWidth="base" borderRadius="base">
       <s-stack direction="block" gap="base">
-        <s-grid gridTemplateColumns="1fr 1fr" gap="base">
+        <s-grid gridTemplateColumns="2fr 2fr 1fr" gap="base">
           <s-text-field
             label="Nombre"
             placeholder="Ej: María"
@@ -332,6 +353,20 @@ function VendorRow({ row, errors, previewMessage, clicks, onChange, onRemove }) 
             {...(errors.phone ? { error: errors.phone } : {})}
             onInput={(e) => onChange(row.id, "phone", e.currentTarget.value)}
           ></s-text-field>
+          <s-select
+            label="Prioridad"
+            details="Turnos por vuelta"
+            value={String(row.weight)}
+            onChange={(e) =>
+              onChange(row.id, "weight", Number(e.currentTarget.value))
+            }
+          >
+            {WEIGHT_OPTIONS.map((weight) => (
+              <s-option key={weight} value={String(weight)}>
+                {weight === 1 ? "1 (normal)" : `${weight}×`}
+              </s-option>
+            ))}
+          </s-select>
         </s-grid>
 
         <s-stack direction="inline" gap="base" alignItems="center">
@@ -488,6 +523,7 @@ export default function Index() {
       name: r.name.trim(),
       phone: digitsOnly(r.phone),
       active: r.active,
+      weight: toWeight(r.weight),
       hours: r.scheduled
         ? { start: r.start, end: r.end, days: r.days }
         : null,
