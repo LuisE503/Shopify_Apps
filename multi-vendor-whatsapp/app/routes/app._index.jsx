@@ -3,6 +3,7 @@ import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import db from "../db.server";
 
 // La configuración vive en app-data metafields para que la Theme App Extension
 // la lea desde Liquid (app.metafields.whatsapp_router.*) sin tocar el backend.
@@ -139,8 +140,33 @@ const describeSchedule = (row) => {
   return `${labels.join(", ")} · ${row.start}–${row.end}${crossesMidnight ? " (del día siguiente)" : ""}`;
 };
 
+const STATS_DAYS = 30;
+
+/** Clics de los últimos 30 días agrupados por número de vendedor. */
+const loadClickStats = async (shop) => {
+  const since = new Date(Date.now() - STATS_DAYS * 24 * 60 * 60 * 1000);
+
+  try {
+    const grouped = await db.vendorClick.groupBy({
+      by: ["vendorPhone"],
+      where: { shop, createdAt: { gte: since } },
+      _count: { _all: true },
+    });
+
+    return grouped.reduce((counts, row) => {
+      counts[row.vendorPhone] = row._count._all;
+      return counts;
+    }, {});
+  } catch {
+    // Las estadísticas son un extra: si fallan, el panel debe seguir abriendo
+    return {};
+  }
+};
+
 export const loader = async ({ request }) => {
-  const { admin } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
+
+  const clicksByPhone = await loadClickStats(session.shop);
 
   const response = await admin.graphql(
     `#graphql
@@ -163,6 +189,7 @@ export const loader = async ({ request }) => {
   return {
     vendors: Array.isArray(storedVendors) ? storedVendors.map(toVendor) : [],
     message: installation?.message?.value || DEFAULT_MESSAGE,
+    clicksByPhone,
   };
 };
 
@@ -274,7 +301,7 @@ export const action = async ({ request }) => {
  */
 /* eslint-disable react/prop-types -- el proyecto es JavaScript y no usa
    prop-types en ninguna ruta; los props quedan documentados arriba */
-function VendorRow({ row, errors, previewMessage, onChange, onRemove }) {
+function VendorRow({ row, errors, previewMessage, clicks, onChange, onRemove }) {
   const phoneDigits = digitsOnly(row.phone);
   const canTest = !errors.phone && phoneDigits.length >= MIN_PHONE_DIGITS;
   const testUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(previewMessage)}`;
@@ -320,6 +347,9 @@ function VendorRow({ row, errors, previewMessage, onChange, onRemove }) {
               onChange(row.id, "scheduled", e.currentTarget.checked)
             }
           ></s-switch>
+          {clicks > 0 && (
+            <s-badge tone="info">{`${clicks} clic(s) en ${STATS_DAYS} días`}</s-badge>
+          )}
           {isRowDirty(row) && <s-badge tone="warning">Sin guardar</s-badge>}
           {canTest && (
             <s-button variant="tertiary" href={testUrl} target="_blank">
@@ -394,7 +424,11 @@ function VendorRow({ row, errors, previewMessage, onChange, onRemove }) {
 /* eslint-enable react/prop-types */
 
 export default function Index() {
-  const { vendors: vendorsOnLoad, message: messageOnLoad } = useLoaderData();
+  const {
+    vendors: vendorsOnLoad,
+    message: messageOnLoad,
+    clicksByPhone,
+  } = useLoaderData();
   const fetcher = useFetcher();
   const shopify = useAppBridge();
 
@@ -482,6 +516,10 @@ export default function Index() {
 
   const activeCount = saved.filter((v) => v.active).length;
   const scheduledCount = saved.filter((v) => v.active && v.hours).length;
+  const totalClicks = Object.values(clicksByPhone).reduce(
+    (sum, count) => sum + count,
+    0,
+  );
 
   // La Save Bar oficial del admin aparece solo cuando hay cambios sin guardar
   useEffect(() => {
@@ -564,6 +602,11 @@ export default function Index() {
           {scheduledCount > 0 && (
             <s-badge tone="info">{`${scheduledCount} con horario`}</s-badge>
           )}
+          {totalClicks > 0 && (
+            <s-badge tone="info">
+              {`${totalClicks} clic(s) en ${STATS_DAYS} días`}
+            </s-badge>
+          )}
           {isDirty && <s-badge tone="warning">Cambios sin guardar</s-badge>}
         </s-stack>
 
@@ -587,6 +630,7 @@ export default function Index() {
               row={row}
               errors={validation.errors.get(row.id) ?? {}}
               previewMessage={previewMessage}
+              clicks={clicksByPhone[digitsOnly(row.phone)] ?? 0}
               onChange={updateRow}
               onRemove={removeRow}
             />

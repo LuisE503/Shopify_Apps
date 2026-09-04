@@ -166,6 +166,34 @@
       .join(url);
   }
 
+  /**
+   * Avisa al backend de la app de que este vendedor recibió un clic.
+   * Va con sendBeacon para que el envío sobreviva a la navegación hacia
+   * WhatsApp; si algo falla, el cliente se va igual a su chat.
+   */
+  function trackClick(endpoint, vendor) {
+    if (!endpoint) return;
+    var body = JSON.stringify({ name: vendor.name, phone: vendor.phone });
+
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(
+          endpoint,
+          new Blob([body], { type: "application/json" }),
+        );
+        return;
+      }
+      fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body,
+        keepalive: true,
+      }).catch(function () {});
+    } catch (error) {
+      // Las estadísticas nunca deben interrumpir una venta
+    }
+  }
+
   function hideAddToCart(customSelector) {
     var selectors = ADD_TO_CART_SELECTORS.slice();
     if (customSelector) {
@@ -227,6 +255,7 @@
       // sin disparar un evento que hayamos escuchado
       refreshLink();
       advanceIndex(index, vendors.length);
+      trackClick(config.clickEndpoint, vendor);
     });
 
     if (config.hideAddToCart) {

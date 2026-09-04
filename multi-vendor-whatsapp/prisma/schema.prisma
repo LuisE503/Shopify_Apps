@@ -32,3 +32,15 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+// Un registro por clic en el botón de WhatsApp. Alimenta las estadísticas
+// del panel: qué vendedor recibe más clientes.
+model VendorClick {
+  id          String   @id @default(cuid())
+  shop        String
+  vendorName  String
+  vendorPhone String
+  createdAt   DateTime @default(now())
+
+  @@index([shop, createdAt])
+}

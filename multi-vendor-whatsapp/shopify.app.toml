@@ -22,6 +22,13 @@ api_version = "2026-07"
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
 
+[app_proxy]
+# La tienda llama a /apps/whatsapp-router/... y Shopify lo reenvía aquí.
+# El CLI actualiza esta URL automáticamente durante `shopify app dev`.
+url = "https://example.com/proxy"
+subpath = "whatsapp-router"
+prefix = "apps"
+
 [auth]
 redirect_urls = [ ]
 

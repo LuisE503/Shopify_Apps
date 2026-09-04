@@ -101,6 +101,7 @@
       {
         "vendors": {{ vendors_json }},
         "shopUtcOffset": {{ 'now' | date: '%z' | json }},
+        "clickEndpoint": "/apps/whatsapp-router/click",
         "messageTemplate": {{ message_template | json }},
         "productTitle": {{ product_title_json }},
         "productUrl": {{ product_url_json }},
