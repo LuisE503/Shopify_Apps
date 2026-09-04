@@ -54,7 +54,7 @@
       {%- assign variant_separator = '' -%}
       {%- unless product.has_only_default_variant -%}
         {%- for variant in product.variants -%}
-          {{ variant_separator }}"{{ variant.id }}": {{ variant.title | json }}
+          {{ variant_separator }}"{{ variant.id }}": {"title": {{ variant.title | json }}, "available": {{ variant.available | json }}}
           {%- assign variant_separator = ',' -%}
         {%- endfor -%}
       {%- endunless -%}

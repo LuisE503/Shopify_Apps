@@ -58,8 +58,9 @@
   overflow-wrap: anywhere;
 }
 
-.mvw-button[hidden] {
-  display: none;
+.mvw-button[hidden],
+.mvw-block[hidden] {
+  display: none !important;
 }
 
 .mvw-note {

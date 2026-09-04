@@ -151,11 +151,11 @@
 
     var label = config.productTitle;
     var url = config.productUrl;
-    var variants = config.variants || {};
     var variantId = currentVariantId();
+    var variant = variantId ? (config.variants || {})[variantId] : null;
 
-    if (variantId && variants[variantId]) {
-      label = label + " (" + variants[variantId] + ")";
+    if (variant) {
+      label = label + " (" + (variant.title || "") + ")";
       url = url + (url.indexOf("?") === -1 ? "?" : "&") + "variant=" + variantId;
     }
 
@@ -164,6 +164,14 @@
       .join(label)
       .split("{url}")
       .join(url);
+  }
+
+  /** ¿Hay stock de lo que el cliente tiene seleccionado ahora mismo? */
+  function isInStock(config) {
+    var variantId = currentVariantId();
+    var variant = variantId ? (config.variants || {})[variantId] : null;
+    if (variant) return variant.available !== false;
+    return config.productAvailable !== false;
   }
 
   /**
@@ -234,9 +242,31 @@
     var index = readIndex(vendors.length) % vendors.length;
     var vendor = vendors[index];
 
+    var labelElement = block.querySelector("[data-mvw-label]");
+    var behavior = config.outOfStockBehavior || "show";
+
+    /**
+     * Aplica lo que el comerciante eligió para los productos agotados.
+     * Se vuelve a evaluar en cada cambio de variante: en un mismo producto
+     * puede haber una talla agotada y otra disponible.
+     */
+    function applyStockState() {
+      if (behavior === "show") return;
+      var inStock = isInStock(config);
+
+      if (behavior === "hide") {
+        block.hidden = !inStock;
+      } else if (behavior === "label" && labelElement) {
+        labelElement.textContent = inStock
+          ? config.defaultLabel
+          : config.outOfStockLabel;
+      }
+    }
+
     // Sustituye el enlace de reserva que ya venía renderizado desde Liquid
     function refreshLink() {
       button.href = buildLink(vendor, buildMessage(config));
+      applyStockState();
     }
 
     refreshLink();
