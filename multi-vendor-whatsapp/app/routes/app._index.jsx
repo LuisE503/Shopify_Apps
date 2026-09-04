@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { useEffect, useMemo, useState } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -27,9 +26,7 @@ const SAMPLE_PRODUCT = "Camiseta Azul (Talla M)";
 const SAMPLE_PRICE = "$12.00";
 const SAMPLE_URL = "https://tu-tienda.com/products/camiseta-azul";
 
-// Los enlaces directos al editor de temas necesitan el identificador de la
-// extensión, que vive en su propio archivo de configuración
-const EXTENSION_TOML = "extensions/whatsapp-button/shopify.extension.toml";
+// Nombres de archivo de los bloques en extensions/whatsapp-button/blocks/
 const PRODUCT_BLOCK_HANDLE = "whatsapp_button";
 const FLOAT_BLOCK_HANDLE = "whatsapp_float";
 
@@ -290,25 +287,18 @@ const loadClickStats = async (shop) => {
 /* Enlaces directos al editor de temas                                   */
 /* -------------------------------------------------------------------- */
 
-let cachedExtensionUid;
-const extensionUid = () => {
-  if (cachedExtensionUid !== undefined) return cachedExtensionUid;
-  try {
-    const toml = readFileSync(EXTENSION_TOML, "utf8");
-    cachedExtensionUid = /uid\s*=\s*"([^"]+)"/.exec(toml)?.[1] ?? null;
-  } catch {
-    cachedExtensionUid = null;
-  }
-  return cachedExtensionUid;
-};
-
+/**
+ * Shopify identifica los bloques en estos enlaces por el client_id de la app
+ * (su documentación llama a este valor api_key) seguido del nombre del bloque.
+ */
 const themeEditorLinks = (shop) => {
-  const uid = extensionUid();
-  if (!uid) return null;
+  // eslint-disable-next-line no-undef
+  const apiKey = process.env.SHOPIFY_API_KEY;
+  if (!apiKey) return null;
   const editor = `https://${shop}/admin/themes/current/editor`;
   return {
-    addProductBlock: `${editor}?template=product&addAppBlockId=${uid}/${PRODUCT_BLOCK_HANDLE}&target=mainSection`,
-    activateFloat: `${editor}?context=apps&activateAppId=${uid}/${FLOAT_BLOCK_HANDLE}`,
+    addProductBlock: `${editor}?template=product&addAppBlockId=${apiKey}/${PRODUCT_BLOCK_HANDLE}&target=mainSection`,
+    activateFloat: `${editor}?context=apps&activateAppId=${apiKey}/${FLOAT_BLOCK_HANDLE}`,
   };
 };
 
