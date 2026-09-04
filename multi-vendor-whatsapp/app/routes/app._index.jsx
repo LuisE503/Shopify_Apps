@@ -19,22 +19,60 @@ const DEFAULT_MESSAGE = "Hola, me interesa este producto: {producto} - {url}";
 const SAMPLE_PRODUCT = "Camiseta Azul";
 const SAMPLE_URL = "https://tu-tienda.com/products/camiseta-azul";
 
+// Lunes primero, como se lee un horario en LATAM. El valor coincide con
+// Date.getDay() en JavaScript (0 = domingo), que es lo que usa el storefront.
+const WEEK_DAYS = [
+  { value: 1, label: "Lun" },
+  { value: 2, label: "Mar" },
+  { value: 3, label: "Mié" },
+  { value: 4, label: "Jue" },
+  { value: 5, label: "Vie" },
+  { value: 6, label: "Sáb" },
+  { value: 0, label: "Dom" },
+];
+const WEEKDAYS_ONLY = [1, 2, 3, 4, 5];
+
+const TIME_OPTIONS = (() => {
+  const options = [];
+  for (let hour = 0; hour < 24; hour += 1) {
+    for (const minutes of ["00", "30"]) {
+      options.push(`${String(hour).padStart(2, "0")}:${minutes}`);
+    }
+  }
+  return options;
+})();
+
 const digitsOnly = (value) => String(value ?? "").replace(/\D/g, "");
 
 // Se aceptan separadores comunes al escribir: +503 6860-2600, (503) 686 02600.
 // Cualquier otro carácter (letras, símbolos) se marca como error visible.
 const ALLOWED_PHONE_CHARS = /^[\d\s+().-]*$/;
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 const renderMessage = (template, product, url) =>
   String(template ?? "")
     .replaceAll("{producto}", product)
     .replaceAll("{url}", url);
 
-// Normaliza un vendedor venido de la API (active ausente = activo)
+// Horario guardado -> horario normalizado (null = disponible siempre)
+const toHours = (hours) => {
+  if (!hours || typeof hours !== "object") return null;
+  const start = TIME_PATTERN.test(hours.start) ? hours.start : null;
+  const end = TIME_PATTERN.test(hours.end) ? hours.end : null;
+  if (!start || !end) return null;
+  const days = Array.isArray(hours.days)
+    ? hours.days.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6)
+    : [];
+  if (days.length === 0) return null;
+  return { start, end, days };
+};
+
+// Normaliza un vendedor venido de la API (campos ausentes = valores por defecto)
 const toVendor = (v) => ({
   name: String(v?.name ?? ""),
   phone: String(v?.phone ?? ""),
   active: v?.active !== false,
+  hours: toHours(v?.hours),
 });
 
 // Contador módulo-level: garantiza ids de fila únicos y estables para React.
@@ -42,32 +80,64 @@ const toVendor = (v) => ({
 let rowIdCounter = 0;
 const makeRows = (list) =>
   (list.length > 0 ? list : [{ name: "", phone: "", active: true }]).map(
-    (v) => ({
-      id: ++rowIdCounter,
-      name: v.name ?? "",
-      phone: v.phone ?? "",
-      active: v.active !== false,
-      savedName: v.name ?? "",
-      savedPhone: v.phone ?? "",
-      savedActive: v.active !== false,
-    }),
+    (v) => {
+      const hours = toHours(v.hours);
+      return {
+        id: ++rowIdCounter,
+        name: v.name ?? "",
+        phone: v.phone ?? "",
+        active: v.active !== false,
+        scheduled: Boolean(hours),
+        start: hours ? hours.start : "08:00",
+        end: hours ? hours.end : "18:00",
+        days: hours ? hours.days : WEEKDAYS_ONLY,
+        saved: JSON.stringify([
+          v.name ?? "",
+          v.phone ?? "",
+          v.active !== false,
+          hours,
+        ]),
+      };
+    },
   );
 
-const isRowDirty = (row) =>
-  row.name.trim() !== row.savedName ||
-  row.phone.trim() !== row.savedPhone ||
-  row.active !== row.savedActive;
+// Lo que se guardaría de esta fila, en el mismo formato que `saved`
+const rowSignature = (row) =>
+  JSON.stringify([
+    row.name.trim(),
+    row.phone.trim(),
+    row.active,
+    row.scheduled
+      ? toHours({ start: row.start, end: row.end, days: row.days })
+      : null,
+  ]);
+
+const isRowDirty = (row) => rowSignature(row) !== row.saved;
 
 // Firma de lo visible en pantalla, ignorando filas totalmente vacías
 const visibleSignature = (rows) =>
   JSON.stringify(
     rows
-      .map((r) => [r.name.trim(), r.phone.trim(), r.active])
-      .filter(([name, phone]) => name || phone),
+      .filter((r) => r.name.trim() || r.phone.trim())
+      .map((r) => rowSignature(r)),
   );
 
 const savedSignature = (saved) =>
-  JSON.stringify(saved.map((v) => [v.name, v.phone, v.active]));
+  JSON.stringify(
+    saved.map((v) =>
+      JSON.stringify([v.name, v.phone, v.active, toHours(v.hours)]),
+    ),
+  );
+
+const describeSchedule = (row) => {
+  if (!row.scheduled) return "Disponible siempre";
+  const labels = WEEK_DAYS.filter((d) => row.days.includes(d.value)).map(
+    (d) => d.label,
+  );
+  if (labels.length === 0) return "Sin días seleccionados";
+  const crossesMidnight = row.start > row.end;
+  return `${labels.join(", ")} · ${row.start}–${row.end}${crossesMidnight ? " (del día siguiente)" : ""}`;
+};
 
 export const loader = async ({ request }) => {
   const { admin } = await authenticate.admin(request);
@@ -110,13 +180,12 @@ export const action = async ({ request }) => {
   // Red de seguridad del servidor: normaliza, valida y elimina duplicados.
   // La validación principal (con mensajes por campo) ocurre en el cliente.
   const seenPhones = new Set();
-  const cleanVendors = (
-    Array.isArray(payload?.vendors) ? payload.vendors : []
-  )
+  const cleanVendors = (Array.isArray(payload?.vendors) ? payload.vendors : [])
     .map((v) => ({
       name: String(v?.name ?? "").trim(),
       phone: digitsOnly(v?.phone),
       active: v?.active !== false,
+      hours: toHours(v?.hours),
     }))
     .filter((v) => {
       if (!v.name || v.phone.length < MIN_PHONE_DIGITS) return false;
@@ -126,8 +195,9 @@ export const action = async ({ request }) => {
     });
 
   const cleanMessage =
-    String(payload?.message ?? "").trim().slice(0, MAX_MESSAGE_LENGTH) ||
-    DEFAULT_MESSAGE;
+    String(payload?.message ?? "")
+      .trim()
+      .slice(0, MAX_MESSAGE_LENGTH) || DEFAULT_MESSAGE;
 
   const installResponse = await admin.graphql(
     `#graphql
@@ -193,6 +263,136 @@ export const action = async ({ request }) => {
   };
 };
 
+/**
+ * Tarjeta de un vendedor.
+ *
+ * @param row            fila del estado local (ver makeRows)
+ * @param errors         errores de esta fila: { name, phone, hours, days }
+ * @param previewMessage mensaje de ejemplo para el enlace de prueba
+ * @param onChange       (id, campo, valor) => void
+ * @param onRemove       (id) => void
+ */
+/* eslint-disable react/prop-types -- el proyecto es JavaScript y no usa
+   prop-types en ninguna ruta; los props quedan documentados arriba */
+function VendorRow({ row, errors, previewMessage, onChange, onRemove }) {
+  const phoneDigits = digitsOnly(row.phone);
+  const canTest = !errors.phone && phoneDigits.length >= MIN_PHONE_DIGITS;
+  const testUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(previewMessage)}`;
+
+  const toggleDay = (day) => {
+    const days = row.days.includes(day)
+      ? row.days.filter((d) => d !== day)
+      : [...row.days, day].sort();
+    onChange(row.id, "days", days);
+  };
+
+  return (
+    <s-box padding="base" borderWidth="base" borderRadius="base">
+      <s-stack direction="block" gap="base">
+        <s-grid gridTemplateColumns="1fr 1fr" gap="base">
+          <s-text-field
+            label="Nombre"
+            placeholder="Ej: María"
+            value={row.name}
+            {...(errors.name ? { error: errors.name } : {})}
+            onInput={(e) => onChange(row.id, "name", e.currentTarget.value)}
+          ></s-text-field>
+          <s-text-field
+            label="Número de WhatsApp"
+            placeholder="Ej: 50371234567"
+            details="Código de país + número"
+            value={row.phone}
+            {...(errors.phone ? { error: errors.phone } : {})}
+            onInput={(e) => onChange(row.id, "phone", e.currentTarget.value)}
+          ></s-text-field>
+        </s-grid>
+
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-switch
+            label="Activo"
+            checked={row.active}
+            onChange={(e) => onChange(row.id, "active", e.currentTarget.checked)}
+          ></s-switch>
+          <s-switch
+            label="Horario"
+            checked={row.scheduled}
+            onChange={(e) =>
+              onChange(row.id, "scheduled", e.currentTarget.checked)
+            }
+          ></s-switch>
+          {isRowDirty(row) && <s-badge tone="warning">Sin guardar</s-badge>}
+          {canTest && (
+            <s-button variant="tertiary" href={testUrl} target="_blank">
+              Probar en WhatsApp
+            </s-button>
+          )}
+          <s-button
+            icon="delete"
+            variant="tertiary"
+            tone="critical"
+            accessibilityLabel={`Eliminar vendedor ${row.name || "sin nombre"}`}
+            onClick={() => onRemove(row.id)}
+          ></s-button>
+        </s-stack>
+
+        {row.scheduled && (
+          <s-box padding="base" background="subdued" borderRadius="base">
+            <s-stack direction="block" gap="base">
+              <s-grid gridTemplateColumns="1fr 1fr" gap="base">
+                <s-select
+                  label="Desde"
+                  value={row.start}
+                  onChange={(e) =>
+                    onChange(row.id, "start", e.currentTarget.value)
+                  }
+                >
+                  {TIME_OPTIONS.map((time) => (
+                    <s-option key={time} value={time}>
+                      {time}
+                    </s-option>
+                  ))}
+                </s-select>
+                <s-select
+                  label="Hasta"
+                  value={row.end}
+                  {...(errors.hours ? { error: errors.hours } : {})}
+                  onChange={(e) =>
+                    onChange(row.id, "end", e.currentTarget.value)
+                  }
+                >
+                  {TIME_OPTIONS.map((time) => (
+                    <s-option key={time} value={time}>
+                      {time}
+                    </s-option>
+                  ))}
+                </s-select>
+              </s-grid>
+
+              <s-stack direction="inline" gap="base" alignItems="center">
+                {WEEK_DAYS.map((day) => (
+                  <s-checkbox
+                    key={day.value}
+                    label={day.label}
+                    checked={row.days.includes(day.value)}
+                    onChange={() => toggleDay(day.value)}
+                  ></s-checkbox>
+                ))}
+              </s-stack>
+
+              {errors.days && (
+                <s-text tone="critical">{errors.days}</s-text>
+              )}
+              <s-text tone="neutral">{describeSchedule(row)}</s-text>
+            </s-stack>
+          </s-box>
+        )}
+      </s-stack>
+    </s-box>
+  );
+}
+
+/* eslint-enable react/prop-types */
+
 export default function Index() {
   const { vendors: vendorsOnLoad, message: messageOnLoad } = useLoaderData();
   const fetcher = useFetcher();
@@ -232,7 +432,16 @@ export default function Index() {
       }
       seenPhones.add(phone);
 
-      if (rowErrors.name || rowErrors.phone) {
+      if (row.scheduled) {
+        if (row.days.length === 0) {
+          rowErrors.days = "Selecciona al menos un día";
+        }
+        if (row.start === row.end) {
+          rowErrors.hours = "La hora de inicio y fin no pueden ser iguales";
+        }
+      }
+
+      if (Object.keys(rowErrors).length > 0) {
         errors.set(row.id, rowErrors);
       }
     }
@@ -245,6 +454,9 @@ export default function Index() {
       name: r.name.trim(),
       phone: digitsOnly(r.phone),
       active: r.active,
+      hours: r.scheduled
+        ? { start: r.start, end: r.end, days: r.days }
+        : null,
     }));
 
     return {
@@ -269,6 +481,7 @@ export default function Index() {
   );
 
   const activeCount = saved.filter((v) => v.active).length;
+  const scheduledCount = saved.filter((v) => v.active && v.hours).length;
 
   // La Save Bar oficial del admin aparece solo cuando hay cambios sin guardar
   useEffect(() => {
@@ -341,13 +554,16 @@ export default function Index() {
         <s-paragraph>
           Agrega los números de tus vendedores. Los clics de tus clientes en el
           botón &quot;Comprar por WhatsApp&quot; se repartirán equitativamente
-          entre los vendedores activos (round robin).
+          entre los vendedores activos que estén en su horario (round robin).
         </s-paragraph>
 
         <s-stack direction="inline" gap="base" alignItems="center">
           <s-badge tone={activeCount > 0 ? "success" : "auto"}>
             {`${activeCount} activo(s) de ${saved.length} guardado(s)`}
           </s-badge>
+          {scheduledCount > 0 && (
+            <s-badge tone="info">{`${scheduledCount} con horario`}</s-badge>
+          )}
           {isDirty && <s-badge tone="warning">Cambios sin guardar</s-badge>}
         </s-stack>
 
@@ -365,70 +581,16 @@ export default function Index() {
         )}
 
         <s-stack direction="block" gap="base">
-          {rows.map((row) => {
-            const rowErrors = validation.errors.get(row.id) ?? {};
-            const phoneDigits = digitsOnly(row.phone);
-            const canTest = !rowErrors.phone && phoneDigits.length >= MIN_PHONE_DIGITS;
-            const testUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(previewMessage)}`;
-
-            return (
-              <s-box
-                key={row.id}
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-              >
-                <s-stack direction="block" gap="base">
-                  <s-grid gridTemplateColumns="1fr 1fr" gap="base">
-                    <s-text-field
-                      label="Nombre"
-                      placeholder="Ej: María"
-                      value={row.name}
-                      {...(rowErrors.name ? { error: rowErrors.name } : {})}
-                      onInput={(e) =>
-                        updateRow(row.id, "name", e.currentTarget.value)
-                      }
-                    ></s-text-field>
-                    <s-text-field
-                      label="Número de WhatsApp"
-                      placeholder="Ej: 50371234567"
-                      details="Código de país + número"
-                      value={row.phone}
-                      {...(rowErrors.phone ? { error: rowErrors.phone } : {})}
-                      onInput={(e) =>
-                        updateRow(row.id, "phone", e.currentTarget.value)
-                      }
-                    ></s-text-field>
-                  </s-grid>
-
-                  <s-stack direction="inline" gap="base" alignItems="center">
-                    <s-switch
-                      label="Activo"
-                      checked={row.active}
-                      onChange={(e) =>
-                        updateRow(row.id, "active", e.currentTarget.checked)
-                      }
-                    ></s-switch>
-                    {isRowDirty(row) && (
-                      <s-badge tone="warning">Sin guardar</s-badge>
-                    )}
-                    {canTest && (
-                      <s-button variant="tertiary" href={testUrl} target="_blank">
-                        Probar en WhatsApp
-                      </s-button>
-                    )}
-                    <s-button
-                      icon="delete"
-                      variant="tertiary"
-                      tone="critical"
-                      accessibilityLabel={`Eliminar vendedor ${row.name || "sin nombre"}`}
-                      onClick={() => removeRow(row.id)}
-                    ></s-button>
-                  </s-stack>
-                </s-stack>
-              </s-box>
-            );
-          })}
+          {rows.map((row) => (
+            <VendorRow
+              key={row.id}
+              row={row}
+              errors={validation.errors.get(row.id) ?? {}}
+              previewMessage={previewMessage}
+              onChange={updateRow}
+              onRemove={removeRow}
+            />
+          ))}
         </s-stack>
 
         <s-stack direction="inline" gap="base">
@@ -456,11 +618,7 @@ export default function Index() {
           onInput={(e) => setMessage(e.currentTarget.value)}
         ></s-text-area>
 
-        <s-box
-          padding="base"
-          background="subdued"
-          borderRadius="base"
-        >
+        <s-box padding="base" background="subdued" borderRadius="base">
           <s-stack direction="block" gap="small-300">
             <s-text type="strong">Vista previa</s-text>
             <s-text>{previewMessage}</s-text>
@@ -479,12 +637,16 @@ export default function Index() {
             para El Salvador: 50371234567.
           </s-list-item>
           <s-list-item>
-            Usa &quot;Probar en WhatsApp&quot; para confirmar que el número es
-            correcto antes de publicarlo en tu tienda.
+            Activa &quot;Horario&quot; para que un vendedor solo reciba clics
+            en sus días y horas. La hora es la de tu tienda.
           </s-list-item>
           <s-list-item>
-            Desactiva a un vendedor cuando no esté disponible: deja de recibir
-            clics sin perder su número.
+            Si a una hora nadie está en turno, se reparte entre todos los
+            activos: nunca se pierde una venta.
+          </s-list-item>
+          <s-list-item>
+            Usa &quot;Probar en WhatsApp&quot; para confirmar que el número es
+            correcto antes de publicarlo en tu tienda.
           </s-list-item>
         </s-unordered-list>
       </s-section>

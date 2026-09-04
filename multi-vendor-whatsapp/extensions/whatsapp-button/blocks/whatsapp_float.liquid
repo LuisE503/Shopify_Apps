@@ -28,7 +28,7 @@
     {%- assign separator = '' -%}
     {%- for vendor in vendors -%}
       {%- if vendor.phone != blank and vendor.active != false -%}
-        {{ separator }}{"name": {{ vendor.name | json }}, "phone": {{ vendor.phone | json }}}
+        {{ separator }}{"name": {{ vendor.name | json }}, "phone": {{ vendor.phone | json }}, "hours": {% if vendor.hours %}{"start": {{ vendor.hours.start | json }}, "end": {{ vendor.hours.end | json }}, "days": {{ vendor.hours.days | json }}}{% else %}null{% endif %}}
         {%- assign separator = ',' -%}
       {%- endif -%}
     {%- endfor -%}
@@ -100,6 +100,7 @@
     <script type="application/json" data-mvw-config>
       {
         "vendors": {{ vendors_json }},
+        "shopUtcOffset": {{ 'now' | date: '%z' | json }},
         "messageTemplate": {{ message_template | json }},
         "productTitle": {{ product_title_json }},
         "productUrl": {{ product_url_json }},

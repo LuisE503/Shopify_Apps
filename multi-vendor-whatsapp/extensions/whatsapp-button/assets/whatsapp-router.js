@@ -50,6 +50,79 @@
     );
   }
 
+  /** "08:30" -> 510 minutos. Devuelve null si el formato no es válido. */
+  function toMinutes(time) {
+    var match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(time || ""));
+    if (!match) return null;
+    return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
+  }
+
+  /**
+   * Hora actual en el huso de la tienda, no en el del visitante: un cliente
+   * en otro país debe ver disponible a quien esté en turno en la tienda.
+   * `offset` llega desde Liquid con el formato "-0600".
+   */
+  function shopNow(offset) {
+    var match = /^([+-])(\d{2})(\d{2})$/.exec(String(offset || ""));
+    var now = new Date();
+    if (!match) {
+      return { day: now.getDay(), minutes: now.getHours() * 60 + now.getMinutes() };
+    }
+
+    var sign = match[1] === "-" ? -1 : 1;
+    var offsetMinutes =
+      sign * (parseInt(match[2], 10) * 60 + parseInt(match[3], 10));
+    // Se desplaza la marca de tiempo para que los getters locales devuelvan
+    // la hora de pared de la tienda
+    var shifted = new Date(
+      now.getTime() + now.getTimezoneOffset() * 60000 + offsetMinutes * 60000,
+    );
+    return {
+      day: shifted.getDay(),
+      minutes: shifted.getHours() * 60 + shifted.getMinutes(),
+    };
+  }
+
+  /** ¿Este vendedor está en su turno ahora mismo? Sin horario, siempre sí. */
+  function isOnDuty(vendor, now) {
+    var hours = vendor.hours;
+    if (!hours) return true;
+
+    var start = toMinutes(hours.start);
+    var end = toMinutes(hours.end);
+    if (start === null || end === null || start === end) return true;
+
+    var days = hours.days;
+    var withinDays =
+      !Array.isArray(days) || days.length === 0 || days.indexOf(now.day) !== -1;
+
+    if (start < end) {
+      return withinDays && now.minutes >= start && now.minutes < end;
+    }
+
+    // Turno nocturno que cruza la medianoche (por ejemplo 22:00 a 06:00).
+    // Antes de medianoche cuenta el día del turno; después, el día anterior.
+    if (now.minutes >= start) return withinDays;
+    var previousDay = (now.day + 6) % 7;
+    var withinPreviousDay =
+      !Array.isArray(days) ||
+      days.length === 0 ||
+      days.indexOf(previousDay) !== -1;
+    return now.minutes < end && withinPreviousDay;
+  }
+
+  /**
+   * Vendedores que pueden atender ahora. Si nadie está en turno se usan
+   * todos: es preferible una respuesta tardía a perder la venta.
+   */
+  function availableVendors(vendors, offset) {
+    var now = shopNow(offset);
+    var onDuty = vendors.filter(function (vendor) {
+      return isOnDuty(vendor, now);
+    });
+    return onDuty.length > 0 ? onDuty : vendors;
+  }
+
   /**
    * Id de la variante que el cliente tiene seleccionada ahora mismo.
    * Los temas mantienen el parámetro ?variant= de la URL y el campo oculto
@@ -126,9 +199,10 @@
       return;
     }
 
-    var vendors = Array.isArray(config.vendors) ? config.vendors : [];
-    if (vendors.length === 0) return;
+    var allVendors = Array.isArray(config.vendors) ? config.vendors : [];
+    if (allVendors.length === 0) return;
 
+    var vendors = availableVendors(allVendors, config.shopUtcOffset);
     var index = readIndex(vendors.length) % vendors.length;
     var vendor = vendors[index];
 
