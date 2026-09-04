@@ -31,8 +31,33 @@
 
   {%- assign default_message = 'Hola, me interesa este producto: {producto} - {url}' -%}
   {%- assign message_template = app.metafields.whatsapp_router.message.value | default: default_message -%}
-  {%- assign product_url = shop.url | append: product.url -%}
-  {%- assign whatsapp_message = message_template | replace: '{producto}', product.title | replace: '{url}', product_url -%}
+  {%- assign base_product_url = shop.url | append: product.url -%}
+
+  {%- comment -%}
+    Variantes (talla, color...). El JavaScript usa este mapa para nombrar la
+    variante que el cliente tiene seleccionada en ese momento.
+  {%- endcomment -%}
+  {%- capture variants_json -%}
+    {
+    {%- assign variant_separator = '' -%}
+    {%- unless product.has_only_default_variant -%}
+      {%- for variant in product.variants -%}
+        {{ variant_separator }}"{{ variant.id }}": {{ variant.title | json }}
+        {%- assign variant_separator = ',' -%}
+      {%- endfor -%}
+    {%- endunless -%}
+    }
+  {%- endcapture -%}
+
+  {%- comment -%} Mensaje de reserva, con la variante activa al cargar la página {%- endcomment -%}
+  {%- assign product_label = product.title -%}
+  {%- assign product_url = base_product_url -%}
+  {%- unless product.has_only_default_variant -%}
+    {%- assign selected_variant = product.selected_or_first_available_variant -%}
+    {%- assign product_label = product.title | append: ' (' | append: selected_variant.title | append: ')' -%}
+    {%- assign product_url = base_product_url | append: '?variant=' | append: selected_variant.id -%}
+  {%- endunless -%}
+  {%- assign whatsapp_message = message_template | replace: '{producto}', product_label | replace: '{url}', product_url -%}
 
   {%- comment -%}
     Enlace de reserva calculado en el servidor con el primer vendedor activo.
@@ -78,7 +103,10 @@
     <script type="application/json" data-mvw-config>
       {
         "vendors": {{ vendors_json }},
-        "message": {{ whatsapp_message | json }},
+        "messageTemplate": {{ message_template | json }},
+        "productTitle": {{ product.title | json }},
+        "productUrl": {{ base_product_url | json }},
+        "variants": {{ variants_json }},
         "hideAddToCart": {{ block.settings.hide_add_to_cart | json }},
         "customSelector": {{ block.settings.custom_selector | json }}
       }

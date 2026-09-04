@@ -50,6 +50,44 @@
     );
   }
 
+  /**
+   * Id de la variante que el cliente tiene seleccionada ahora mismo.
+   * Los temas mantienen el parámetro ?variant= de la URL y el campo oculto
+   * name="id" del formulario sincronizados con el selector de opciones.
+   */
+  function currentVariantId() {
+    try {
+      var fromUrl = new URLSearchParams(window.location.search).get("variant");
+      if (fromUrl) return String(fromUrl);
+    } catch (error) {
+      // Navegador antiguo sin URLSearchParams: se usa el formulario
+    }
+
+    var input = document.querySelector('form[action*="/cart/add"] [name="id"]');
+    if (input && input.value) return String(input.value);
+
+    return null;
+  }
+
+  /** Rellena {producto} y {url} añadiendo la variante elegida, si la hay. */
+  function buildMessage(config) {
+    var label = config.productTitle;
+    var url = config.productUrl;
+    var variants = config.variants || {};
+    var variantId = currentVariantId();
+
+    if (variantId && variants[variantId]) {
+      label = label + " (" + variants[variantId] + ")";
+      url = url + (url.indexOf("?") === -1 ? "?" : "&") + "variant=" + variantId;
+    }
+
+    return String(config.messageTemplate)
+      .split("{producto}")
+      .join(label)
+      .split("{url}")
+      .join(url);
+  }
+
   function hideAddToCart(customSelector) {
     var selectors = ADD_TO_CART_SELECTORS.slice();
     if (customSelector) {
@@ -90,8 +128,25 @@
     var vendor = vendors[index];
 
     // Sustituye el enlace de reserva que ya venía renderizado desde Liquid
-    button.href = buildLink(vendor, config.message);
+    function refreshLink() {
+      button.href = buildLink(vendor, buildMessage(config));
+    }
+
+    refreshLink();
+
+    // Si el cliente cambia de talla o color, el enlace se actualiza
+    var productForm = document.querySelector('form[action*="/cart/add"]');
+    if (productForm) {
+      productForm.addEventListener("change", function () {
+        // Algunos temas actualizan el campo oculto justo después del evento
+        window.setTimeout(refreshLink, 0);
+      });
+    }
+
     button.addEventListener("click", function () {
+      // Momento decisivo: se recalcula por si el tema cambió la variante
+      // sin disparar un evento que hayamos escuchado
+      refreshLink();
       advanceIndex(index, vendors.length);
     });
 
