@@ -1,19 +1,24 @@
 .mvw-block {
-  margin: 12px 0;
+  margin-top: var(--mvw-space-top, 12px);
+  margin-bottom: var(--mvw-space-bottom, 12px);
+  text-align: var(--mvw-align, left);
 }
 
 .mvw-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 14px 22px;
-  border-radius: 8px;
+  gap: 0.5em;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: var(--mvw-height, 48px);
+  padding: 0 1.25em;
+  border-radius: var(--mvw-radius, 8px);
   background: var(--mvw-bg, #25d366);
   color: var(--mvw-text, #ffffff);
-  font-size: 16px;
+  font-size: var(--mvw-font-size, 16px);
   font-weight: 600;
-  line-height: 1;
+  line-height: 1.2;
   text-align: center;
   text-decoration: none;
   cursor: pointer;
@@ -27,6 +32,16 @@
   text-decoration: none;
 }
 
+/* Contorno visible al navegar con teclado */
+.mvw-button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.mvw-button--fixed {
+  width: var(--mvw-width, 320px);
+}
+
 .mvw-button--full {
   display: flex;
   width: 100%;
@@ -34,8 +49,48 @@
 
 .mvw-button__icon {
   flex-shrink: 0;
+  width: 1.25em;
+  height: 1.25em;
+}
+
+.mvw-button__label {
+  /* Evita que un texto largo desborde el botón en pantallas estrechas */
+  overflow-wrap: anywhere;
 }
 
 .mvw-button[hidden] {
   display: none;
+}
+
+.mvw-note {
+  margin-top: 0.5em;
+  color: var(--mvw-note-color, #6b7280);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.mvw-note p {
+  margin: 0;
+}
+
+.mvw-note p + p {
+  margin-top: 0.4em;
+}
+
+.mvw-note a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+@media screen and (max-width: 749px) {
+  .mvw-block--mobile-full .mvw-button {
+    display: flex;
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mvw-button {
+    transition: none;
+  }
 }
