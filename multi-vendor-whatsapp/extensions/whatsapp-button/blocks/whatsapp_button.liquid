@@ -50,6 +50,25 @@
 
   {{ 'whatsapp-button.css' | asset_url | stylesheet_tag }}
 
+  {%- if block.settings.hide_add_to_cart -%}
+    {%- comment -%}
+      Se oculta con CSS, no solo con JavaScript: si esperáramos al script, el
+      cliente vería el botón "Añadir al carrito" durante un instante y podría
+      alcanzar a pulsarlo. El JS del asset sigue actuando después como refuerzo
+      para los temas que insertan botones más tarde (barras fijas, etc.).
+    {%- endcomment -%}
+    {%- assign extra_selector = block.settings.custom_selector | replace: '<', '' | replace: '{', '' | replace: '}', '' -%}
+    <style>
+      form[action*="/cart/add"] [name="add"],
+      form[action*="/cart/add"] button[type="submit"],
+      .product-form__submit,
+      .shopify-payment-button{% if extra_selector != blank %},
+      {{ extra_selector }}{% endif %} {
+        display: none !important;
+      }
+    </style>
+  {%- endif -%}
+
   <div
     class="mvw-block"
     data-mvw-block
@@ -128,7 +147,7 @@
       "type": "checkbox",
       "id": "hide_add_to_cart",
       "label": "Ocultar el botón Añadir al carrito",
-      "info": "Actívalo si solo vendes por WhatsApp.",
+      "info": "Actívalo si solo vendes por WhatsApp. Oculta también los botones de pago rápido (Shop Pay, PayPal). Déjalo apagado si quieres ofrecer las dos formas de compra.",
       "default": false
     },
     {
