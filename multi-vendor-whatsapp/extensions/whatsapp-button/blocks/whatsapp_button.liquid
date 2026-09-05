@@ -187,6 +187,25 @@
 
   <script src="{{ 'whatsapp-router.js' | asset_url }}" defer></script>
 
+{%- elsif request.design_mode -%}
+  {%- comment -%}
+    Solo dentro del editor de temas; en la tienda real el bloque no imprime
+    nada. Evita la duda clásica: "agregué el bloque y no aparece".
+  {%- endcomment -%}
+  <div
+    class="mvw-placeholder"
+    style="display:flex;flex-direction:column;gap:4px;padding:12px 14px;border:1px dashed #8a8a8a;border-radius:8px;background:#f6f6f7;color:#303030;font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
+    {{ block.shopify_attributes }}
+  >
+    <strong>Botón de WhatsApp (solo visible en el editor)</strong>
+    {%- if active_count == 0 -%}
+      <span>Agrega y guarda al menos un vendedor activo en la app Multi Vendor WhatsApp. En cuanto lo hagas, el botón aparecerá aquí.</span>
+    {%- elsif product == nil -%}
+      <span>Este bloque solo funciona en páginas de producto. Colócalo en la sección de información del producto.</span>
+    {%- else -%}
+      <span>Este producto está agotado y elegiste ocultar el botón sin stock. Con un producto disponible sí se mostrará.</span>
+    {%- endif -%}
+  </div>
 {%- endif -%}
 
 {% schema %}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useFetcher, useLoaderData } from "react-router";
+import { useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
@@ -345,14 +345,125 @@ const themeEditorLinks = (shop) => {
 };
 
 /* -------------------------------------------------------------------- */
+/* ¿Está el bloque colocado en el tema?                                  */
+/* -------------------------------------------------------------------- */
+
+// settings_data.json suele empezar con un comentario /* ... */ que no es JSON
+const parseThemeJson = (text) => {
+  try {
+    return JSON.parse(String(text ?? "").replace(/\/\*[\s\S]*?\*\//g, ""));
+  } catch {
+    return null;
+  }
+};
+
+/** Busca en cualquier nivel un bloque de la app con ese handle, no desactivado. */
+const hasEnabledAppBlock = (root, handle) => {
+  const marker = `/blocks/${handle}/`;
+  const stack = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+    if (
+      typeof node.type === "string" &&
+      node.type.includes(marker) &&
+      node.disabled !== true
+    ) {
+      return true;
+    }
+    for (const value of Object.values(node)) {
+      if (value && typeof value === "object") stack.push(value);
+    }
+  }
+  return false;
+};
+
+// En settings_data.json los embeds activos viven en `current` (objeto) o en
+// el preset al que `current` apunta por nombre
+const embedRoot = (settings) => {
+  if (!settings) return null;
+  if (settings.current && typeof settings.current === "object") {
+    return settings.current;
+  }
+  return settings.presets?.[settings.current] ?? settings;
+};
+
+/**
+ * Lee la plantilla de producto y los ajustes del tema publicado (y de los
+ * temas de desarrollo, para poder probar antes de publicar) y devuelve dónde
+ * está colocado cada bloque. Requiere el permiso read_themes; si falla por
+ * cualquier motivo devuelve null y el panel simplemente no muestra el estado.
+ */
+const detectInstallation = async (admin) => {
+  try {
+    const response = await admin.graphql(
+      `#graphql
+        query whereIsTheBlock {
+          themes(first: 5, roles: [MAIN, DEVELOPMENT]) {
+            nodes {
+              name
+              role
+              files(
+                filenames: ["templates/product.json", "config/settings_data.json"]
+                first: 2
+              ) {
+                nodes {
+                  filename
+                  body {
+                    ... on OnlineStoreThemeFileBodyText {
+                      content
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }`,
+    );
+    const themes = (await response.json()).data?.themes?.nodes;
+    if (!Array.isArray(themes) || themes.length === 0) return null;
+
+    const status = { productBlock: null, floatEmbed: null, mainTheme: null };
+    // El tema publicado manda; los de desarrollo solo si el publicado no lo tiene
+    const ordered = [...themes].sort((a) => (a.role === "MAIN" ? -1 : 1));
+
+    for (const theme of ordered) {
+      if (theme.role === "MAIN") status.mainTheme = theme.name;
+      const files = Object.fromEntries(
+        (theme.files?.nodes ?? []).map((f) => [f.filename, f.body?.content ?? ""]),
+      );
+      const productJson = parseThemeJson(files["templates/product.json"]);
+      const settingsJson = parseThemeJson(files["config/settings_data.json"]);
+
+      if (
+        !status.productBlock &&
+        hasEnabledAppBlock(productJson, PRODUCT_BLOCK_HANDLE)
+      ) {
+        status.productBlock = { theme: theme.name, published: theme.role === "MAIN" };
+      }
+      if (
+        !status.floatEmbed &&
+        hasEnabledAppBlock(embedRoot(settingsJson), FLOAT_BLOCK_HANDLE)
+      ) {
+        status.floatEmbed = { theme: theme.name, published: theme.role === "MAIN" };
+      }
+    }
+    return status;
+  } catch {
+    return null;
+  }
+};
+
+/* -------------------------------------------------------------------- */
 /* Loader y action                                                       */
 /* -------------------------------------------------------------------- */
 
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
 
-  const [stats, response] = await Promise.all([
+  const [stats, install, response] = await Promise.all([
     loadClickStats(session.shop),
+    detectInstallation(admin),
     admin.graphql(
       `#graphql
         query getWhatsappConfig($namespace: String!) {
@@ -387,6 +498,7 @@ export const loader = async ({ request }) => {
     currencyCode,
     clock: shopClock(timeZone),
     editorLinks: themeEditorLinks(session.shop),
+    install,
   };
 };
 
@@ -724,16 +836,50 @@ function VendorRow({
 
 /**
  * Guía de puesta en marcha con enlaces que abren el editor de temas con el
- * bloque ya seleccionado. Es lo que más dudas genera al instalar la app.
+ * bloque ya seleccionado, y comprobación automática de si ya está colocado.
+ * Es lo que más dudas genera al instalar la app ("no veo el botón").
  *
  * @param hasVendors   ya hay al menos un vendedor activo guardado
  * @param links        { addProductBlock, activateFloat } o null
  * @param storefront   URL de la tienda para probar
+ * @param install      resultado de detectInstallation, o null si no se pudo leer
+ * @param onRefresh    vuelve a comprobar el tema
+ * @param refreshing   true mientras se comprueba
  */
-function SetupGuide({ hasVendors, links, storefront }) {
+function SetupGuide({
+  hasVendors,
+  links,
+  storefront,
+  install,
+  onRefresh,
+  refreshing,
+}) {
+  // Sin datos del tema no se afirma nada: mejor callar que equivocarse
+  const placement = (found) => {
+    if (!install) return null;
+    if (!found) return <s-badge tone="warning">Pendiente</s-badge>;
+    return (
+      <s-badge tone="success">
+        {found.published
+          ? `Instalado en «${found.theme}»`
+          : `Instalado en «${found.theme}» (tema no publicado)`}
+      </s-badge>
+    );
+  };
+
+  const allDone =
+    hasVendors && Boolean(install?.productBlock) && Boolean(install?.floatEmbed);
+
   return (
     <s-section heading="Puesta en marcha">
       <s-stack direction="block" gap="base">
+        {allDone && (
+          <s-banner heading="Todo listo" tone="success">
+            Vendedores guardados y botones colocados en tu tema. Tus clientes ya
+            pueden escribirte.
+          </s-banner>
+        )}
+
         <s-stack direction="inline" gap="base" alignItems="center">
           <s-badge tone={hasVendors ? "success" : "warning"}>1</s-badge>
           <s-text>
@@ -744,9 +890,10 @@ function SetupGuide({ hasVendors, links, storefront }) {
         </s-stack>
 
         <s-stack direction="inline" gap="base" alignItems="center">
-          <s-badge tone="info">2</s-badge>
+          <s-badge tone={install?.productBlock ? "success" : "info"}>2</s-badge>
           <s-text>Coloca el botón en la página de producto.</s-text>
-          {links && (
+          {placement(install?.productBlock)}
+          {links && !install?.productBlock && (
             <s-button
               variant="secondary"
               href={links.addProductBlock}
@@ -758,9 +905,10 @@ function SetupGuide({ hasVendors, links, storefront }) {
         </s-stack>
 
         <s-stack direction="inline" gap="base" alignItems="center">
-          <s-badge tone="info">3</s-badge>
+          <s-badge tone={install?.floatEmbed ? "success" : "info"}>3</s-badge>
           <s-text>Opcional: activa el botón flotante en toda la tienda.</s-text>
-          {links && (
+          {placement(install?.floatEmbed)}
+          {links && !install?.floatEmbed && (
             <s-button
               variant="secondary"
               href={links.activateFloat}
@@ -779,13 +927,21 @@ function SetupGuide({ hasVendors, links, storefront }) {
           </s-button>
         </s-stack>
 
-        {!links && (
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-button
+            variant="tertiary"
+            icon="refresh"
+            onClick={onRefresh}
+            {...(refreshing ? { loading: true } : {})}
+          >
+            Volver a comprobar
+          </s-button>
           <s-text tone="neutral">
-            En el editor de temas: página de producto → Agregar bloque →
-            Aplicaciones → Botón de WhatsApp. El flotante está en
-            Incrustaciones de aplicación.
+            {install
+              ? "Recuerda pulsar Guardar en el editor de temas: sin guardar, el bloque no queda colocado."
+              : "En el editor de temas: página de producto → Agregar bloque → Aplicaciones → Botón de WhatsApp. El flotante está en Incrustaciones de aplicación."}
           </s-text>
-        )}
+        </s-stack>
       </s-stack>
     </s-section>
   );
@@ -843,8 +999,10 @@ export default function Index() {
     currencyCode,
     clock,
     editorLinks,
+    install,
   } = useLoaderData();
   const fetcher = useFetcher();
+  const revalidator = useRevalidator();
   const shopify = useAppBridge();
 
   // `saved*` refleja lo que está en Shopify; `rows`/`message` lo que se edita
@@ -1131,6 +1289,9 @@ export default function Index() {
         hasVendors={activeCount > 0}
         links={editorLinks}
         storefront={`https://${shop}`}
+        install={install}
+        onRefresh={() => revalidator.revalidate()}
+        refreshing={revalidator.state === "loading"}
       />
 
       <s-section heading="Vendedores de WhatsApp">

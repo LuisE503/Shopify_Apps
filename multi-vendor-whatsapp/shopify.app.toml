@@ -7,7 +7,8 @@ name = "Multi Vendor WhatsApp"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products"
+# read_themes: el panel comprueba si el bloque ya está colocado en el tema
+scopes = "write_products,read_themes"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
@@ -21,6 +22,12 @@ api_version = "2026-07"
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
+
+  # Obligatorios para publicar en la App Store (privacidad GDPR/CCPA).
+  # Se atienden en app/routes/webhooks.compliance.jsx
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/compliance"
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
 
 [app_proxy]
 # La tienda llama a /apps/whatsapp-router/... y Shopify lo reenvía aquí.

@@ -137,6 +137,19 @@
 
   <script src="{{ 'whatsapp-router.js' | asset_url }}" defer></script>
 
+{%- elsif request.design_mode and active_count == 0 -%}
+  {%- comment -%}
+    Solo dentro del editor de temas: explica por qué el botón flotante aún no
+    se ve. En la tienda real no se imprime nada.
+  {%- endcomment -%}
+  <div
+    class="mvw-placeholder"
+    style="position:fixed;right:20px;bottom:20px;z-index:2147483000;max-width:280px;padding:12px 14px;border:1px dashed #8a8a8a;border-radius:8px;background:#f6f6f7;color:#303030;font:13px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
+    {{ block.shopify_attributes }}
+  >
+    <strong>Botón flotante WhatsApp</strong><br>
+    Agrega y guarda al menos un vendedor activo en la app Multi Vendor WhatsApp para activarlo. Este aviso solo se ve en el editor.
+  </div>
 {%- endif -%}
 
 {% schema %}
