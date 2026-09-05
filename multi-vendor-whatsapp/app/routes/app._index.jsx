@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
@@ -43,6 +43,11 @@ const WEEK_DAYS = [
 ];
 const WEEKDAYS_ONLY = [1, 2, 3, 4, 5];
 const INTL_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// Configuración recomendada: activo, prioridad normal, disponible siempre
+const DEFAULT_START = "08:00";
+const DEFAULT_END = "18:00";
+const RESET_MODAL_ID = "reset-config-modal";
 
 const TIME_OPTIONS = (() => {
   const options = [];
@@ -110,9 +115,12 @@ const makeRows = (list) =>
         active: v.active !== false,
         weight: toWeight(v.weight),
         scheduled: Boolean(hours),
-        start: hours ? hours.start : "08:00",
-        end: hours ? hours.end : "18:00",
+        start: hours ? hours.start : DEFAULT_START,
+        end: hours ? hours.end : DEFAULT_END,
         days: hours ? hours.days : WEEKDAYS_ONLY,
+        // Solo interfaz: las opciones avanzadas se muestran abiertas cuando
+        // el vendedor ya tiene algo configurado en ellas
+        expanded: Boolean(hours) || toWeight(v.weight) !== 1,
         saved: JSON.stringify([
           v.name ?? "",
           v.phone ?? "",
@@ -137,6 +145,40 @@ const rowSignature = (row) =>
   ]);
 
 const isRowDirty = (row) => rowSignature(row) !== row.saved;
+
+// ¿Este vendedor se aleja de la configuración recomendada?
+const isRowCustomized = (row) =>
+  !row.active || toWeight(row.weight) !== 1 || row.scheduled;
+
+// Vuelve a lo recomendado sin tocar nombre ni número
+const resetRowConfig = (row) => ({
+  ...row,
+  active: true,
+  weight: 1,
+  scheduled: false,
+  start: DEFAULT_START,
+  end: DEFAULT_END,
+  days: WEEKDAYS_ONLY,
+});
+
+const moveItem = (list, from, to) => {
+  if (from < 0 || to < 0 || to >= list.length) return list;
+  const next = [...list];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+};
+
+const formatPrice = (amount, currencyCode) => {
+  try {
+    return new Intl.NumberFormat("es", {
+      style: "currency",
+      currency: currencyCode,
+    }).format(Number(amount));
+  } catch {
+    return String(amount);
+  }
+};
 
 // Firma de lo visible en pantalla, ignorando filas totalmente vacías
 const visibleSignature = (rows) =>
@@ -316,6 +358,7 @@ export const loader = async ({ request }) => {
         query getWhatsappConfig($namespace: String!) {
           shop {
             ianaTimezone
+            currencyCode
           }
           currentAppInstallation {
             vendors: metafield(namespace: $namespace, key: "vendors") {
@@ -333,6 +376,7 @@ export const loader = async ({ request }) => {
   const installation = responseJson.data?.currentAppInstallation;
   const storedVendors = installation?.vendors?.jsonValue;
   const timeZone = responseJson.data?.shop?.ianaTimezone ?? null;
+  const currencyCode = responseJson.data?.shop?.currencyCode ?? "USD";
 
   return {
     shop: session.shop,
@@ -340,6 +384,7 @@ export const loader = async ({ request }) => {
     message: installation?.message?.value || DEFAULT_MESSAGE,
     stats,
     timeZone,
+    currencyCode,
     clock: shopClock(timeZone),
     editorLinks: themeEditorLinks(session.shop),
   };
@@ -450,31 +495,50 @@ export const action = async ({ request }) => {
 /**
  * Tarjeta de un vendedor.
  *
+ * Lo esencial (nombre, número, activo) siempre a la vista; prioridad y
+ * horario quedan en "Opciones", que se abre sola si ya hay algo configurado.
+ *
  * @param row            fila del estado local (ver makeRows)
+ * @param index / count  posición en la lista, para los botones de orden
  * @param errors         errores de esta fila: { name, phone, hours, days }
  * @param previewMessage mensaje de ejemplo para el enlace de prueba
  * @param stats          { count, lastClickAt } de este número, si hay clics
  * @param share          fracción de la rotación que le corresponde (0-1)
  * @param onDuty         true/false si tiene horario, null si no
  * @param onChange       (id, campo, valor) => void
+ * @param onMove         (id, -1 | 1) => void
+ * @param onReset        (id) => void — vuelve a la configuración recomendada
  * @param onRemove       (id) => void
  */
 /* eslint-disable react/prop-types -- el proyecto es JavaScript y no usa
    prop-types en ninguna ruta; los props quedan documentados arriba */
 function VendorRow({
   row,
+  index,
+  count,
   errors,
   previewMessage,
   stats,
   share,
   onDuty,
   onChange,
+  onMove,
+  onReset,
   onRemove,
 }) {
   const phoneDigits = digitsOnly(row.phone);
   const canTest = !errors.phone && phoneDigits.length >= MIN_PHONE_DIGITS;
   const testUrl = `https://wa.me/${phoneDigits}?text=${encodeURIComponent(previewMessage)}`;
   const sharePercent = Math.round(share * 100);
+  const customized = isRowCustomized(row);
+
+  // Resumen de lo configurado cuando las opciones están plegadas
+  const summary = [
+    toWeight(row.weight) !== 1 ? `Prioridad ${toWeight(row.weight)}×` : null,
+    row.scheduled ? describeSchedule(row) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   const toggleDay = (day) => {
     const days = row.days.includes(day)
@@ -486,7 +550,7 @@ function VendorRow({
   return (
     <s-box padding="base" borderWidth="base" borderRadius="base">
       <s-stack direction="block" gap="base">
-        <s-grid gridTemplateColumns="2fr 2fr 1fr" gap="base">
+        <s-grid gridTemplateColumns="1fr 1fr" gap="base">
           <s-text-field
             label="Nombre"
             placeholder="Ej: María"
@@ -502,24 +566,6 @@ function VendorRow({
             {...(errors.phone ? { error: errors.phone } : {})}
             onInput={(e) => onChange(row.id, "phone", e.currentTarget.value)}
           ></s-text-field>
-          <s-select
-            label="Prioridad"
-            details={
-              row.active && sharePercent > 0
-                ? `≈ ${sharePercent}% de la rotación`
-                : "Turnos por vuelta"
-            }
-            value={String(row.weight)}
-            onChange={(e) =>
-              onChange(row.id, "weight", Number(e.currentTarget.value))
-            }
-          >
-            {WEIGHT_OPTIONS.map((weight) => (
-              <s-option key={weight} value={String(weight)}>
-                {weight === 1 ? "1 (normal)" : `${weight}×`}
-              </s-option>
-            ))}
-          </s-select>
         </s-grid>
 
         <s-stack direction="inline" gap="base" alignItems="center">
@@ -528,29 +574,44 @@ function VendorRow({
             checked={row.active}
             onChange={(e) => onChange(row.id, "active", e.currentTarget.checked)}
           ></s-switch>
-          <s-switch
-            label="Horario"
-            checked={row.scheduled}
-            onChange={(e) =>
-              onChange(row.id, "scheduled", e.currentTarget.checked)
-            }
-          ></s-switch>
           {row.active && row.scheduled && onDuty !== null && (
             <s-badge tone={onDuty ? "success" : "auto"}>
               {onDuty ? "En turno ahora" : "Fuera de turno"}
             </s-badge>
           )}
+          {!row.expanded && summary && <s-badge tone="info">{summary}</s-badge>}
           {stats && (
             <s-badge tone="info">
               {`${stats.count} clic(s) · ${relativeTime(stats.lastClickAt)}`}
             </s-badge>
           )}
           {isRowDirty(row) && <s-badge tone="warning">Sin guardar</s-badge>}
+          <s-button
+            variant="tertiary"
+            icon={row.expanded ? "chevron-up" : "chevron-down"}
+            onClick={() => onChange(row.id, "expanded", !row.expanded)}
+          >
+            {row.expanded ? "Ocultar opciones" : "Opciones"}
+          </s-button>
           {canTest && (
             <s-button variant="tertiary" href={testUrl} target="_blank">
               Probar en WhatsApp
             </s-button>
           )}
+          <s-button
+            icon="arrow-up"
+            variant="tertiary"
+            accessibilityLabel="Subir en la lista"
+            {...(index === 0 ? { disabled: true } : {})}
+            onClick={() => onMove(row.id, -1)}
+          ></s-button>
+          <s-button
+            icon="arrow-down"
+            variant="tertiary"
+            accessibilityLabel="Bajar en la lista"
+            {...(index === count - 1 ? { disabled: true } : {})}
+            onClick={() => onMove(row.id, 1)}
+          ></s-button>
           <s-button
             icon="delete"
             variant="tertiary"
@@ -560,52 +621,99 @@ function VendorRow({
           ></s-button>
         </s-stack>
 
-        {row.scheduled && (
+        {row.expanded && (
           <s-box padding="base" background="subdued" borderRadius="base">
             <s-stack direction="block" gap="base">
-              <s-grid gridTemplateColumns="1fr 1fr" gap="base">
+              <s-grid gridTemplateColumns="1fr 1fr" gap="base" alignItems="end">
                 <s-select
-                  label="Desde"
-                  value={row.start}
+                  label="Prioridad"
+                  details={
+                    row.active && sharePercent > 0
+                      ? `≈ ${sharePercent}% de la rotación`
+                      : "Turnos por vuelta"
+                  }
+                  value={String(row.weight)}
                   onChange={(e) =>
-                    onChange(row.id, "start", e.currentTarget.value)
+                    onChange(row.id, "weight", Number(e.currentTarget.value))
                   }
                 >
-                  {TIME_OPTIONS.map((time) => (
-                    <s-option key={time} value={time}>
-                      {time}
+                  {WEIGHT_OPTIONS.map((weight) => (
+                    <s-option key={weight} value={String(weight)}>
+                      {weight === 1 ? "1 (normal)" : `${weight}×`}
                     </s-option>
                   ))}
                 </s-select>
-                <s-select
-                  label="Hasta"
-                  value={row.end}
-                  {...(errors.hours ? { error: errors.hours } : {})}
+                <s-switch
+                  label="Horario de atención"
+                  details="Solo recibe clics en sus días y horas"
+                  checked={row.scheduled}
                   onChange={(e) =>
-                    onChange(row.id, "end", e.currentTarget.value)
+                    onChange(row.id, "scheduled", e.currentTarget.checked)
                   }
-                >
-                  {TIME_OPTIONS.map((time) => (
-                    <s-option key={time} value={time}>
-                      {time}
-                    </s-option>
-                  ))}
-                </s-select>
+                ></s-switch>
               </s-grid>
 
-              <s-stack direction="inline" gap="base" alignItems="center">
-                {WEEK_DAYS.map((day) => (
-                  <s-checkbox
-                    key={day.value}
-                    label={day.label}
-                    checked={row.days.includes(day.value)}
-                    onChange={() => toggleDay(day.value)}
-                  ></s-checkbox>
-                ))}
-              </s-stack>
+              {row.scheduled && (
+                <s-stack direction="block" gap="base">
+                  <s-grid gridTemplateColumns="1fr 1fr" gap="base">
+                    <s-select
+                      label="Desde"
+                      value={row.start}
+                      onChange={(e) =>
+                        onChange(row.id, "start", e.currentTarget.value)
+                      }
+                    >
+                      {TIME_OPTIONS.map((time) => (
+                        <s-option key={time} value={time}>
+                          {time}
+                        </s-option>
+                      ))}
+                    </s-select>
+                    <s-select
+                      label="Hasta"
+                      value={row.end}
+                      {...(errors.hours ? { error: errors.hours } : {})}
+                      onChange={(e) =>
+                        onChange(row.id, "end", e.currentTarget.value)
+                      }
+                    >
+                      {TIME_OPTIONS.map((time) => (
+                        <s-option key={time} value={time}>
+                          {time}
+                        </s-option>
+                      ))}
+                    </s-select>
+                  </s-grid>
 
-              {errors.days && <s-text tone="critical">{errors.days}</s-text>}
-              <s-text tone="neutral">{describeSchedule(row)}</s-text>
+                  <s-stack direction="inline" gap="base" alignItems="center">
+                    {WEEK_DAYS.map((day) => (
+                      <s-checkbox
+                        key={day.value}
+                        label={day.label}
+                        checked={row.days.includes(day.value)}
+                        onChange={() => toggleDay(day.value)}
+                      ></s-checkbox>
+                    ))}
+                  </s-stack>
+
+                  {errors.days && (
+                    <s-text tone="critical">{errors.days}</s-text>
+                  )}
+                  <s-text tone="neutral">{describeSchedule(row)}</s-text>
+                </s-stack>
+              )}
+
+              {customized && (
+                <s-stack direction="inline" gap="base">
+                  <s-button
+                    variant="tertiary"
+                    icon="undo"
+                    onClick={() => onReset(row.id)}
+                  >
+                    Restablecer a lo recomendado
+                  </s-button>
+                </s-stack>
+              )}
             </s-stack>
           </s-box>
         )}
@@ -732,6 +840,7 @@ export default function Index() {
     message: messageOnLoad,
     stats,
     timeZone,
+    currencyCode,
     clock,
     editorLinks,
   } = useLoaderData();
@@ -743,6 +852,11 @@ export default function Index() {
   const [savedMessage, setSavedMessage] = useState(messageOnLoad);
   const [rows, setRows] = useState(() => makeRows(vendorsOnLoad));
   const [message, setMessage] = useState(messageOnLoad);
+
+  // Producto real elegido para la vista previa (null = ejemplo genérico)
+  const [previewProduct, setPreviewProduct] = useState(null);
+  // Guardar con Ctrl+S: el atajo necesita la versión más reciente de handleSave
+  const saveRef = useRef(null);
 
   const isSaving =
     ["loading", "submitting"].includes(fetcher.state) &&
@@ -819,12 +933,17 @@ export default function Index() {
   const previewMessage = useMemo(
     () =>
       renderMessage(message, {
-        producto: SAMPLE_PRODUCT,
-        precio: SAMPLE_PRICE,
-        url: SAMPLE_URL,
+        producto: previewProduct?.title ?? SAMPLE_PRODUCT,
+        precio: previewProduct?.price ?? SAMPLE_PRICE,
+        url: previewProduct?.url ?? SAMPLE_URL,
       }),
-    [message],
+    [message, previewProduct],
   );
+
+  // ¿Algo se aleja de la configuración recomendada? (solo filas con contenido)
+  const isCustomized =
+    rows.some((r) => (r.name.trim() || r.phone.trim()) && isRowCustomized(r)) ||
+    message.trim() !== DEFAULT_MESSAGE;
 
   // Reparto teórico entre los activos, según la prioridad de cada uno
   const totalWeight = rows
@@ -900,8 +1019,114 @@ export default function Index() {
     setMessage(savedMessage);
   };
 
+  const moveRow = (id, delta) =>
+    setRows((current) => {
+      const from = current.findIndex((r) => r.id === id);
+      return moveItem(current, from, from + delta);
+    });
+
+  const resetRow = (id) =>
+    setRows((current) =>
+      current.map((r) => (r.id === id ? resetRowConfig(r) : r)),
+    );
+
+  // Nada se escribe en Shopify hasta que el comerciante pulse Guardar:
+  // la barra aparece y puede revisar o descartar el cambio
+  const resetAll = () => {
+    setRows((current) => current.map(resetRowConfig));
+    setMessage(DEFAULT_MESSAGE);
+    shopify.toast.show("Configuración recomendada aplicada. Guarda para confirmar.");
+  };
+
+  const pickPreviewProduct = async () => {
+    try {
+      const selection = await shopify.resourcePicker({
+        type: "product",
+        multiple: false,
+      });
+      const product = selection?.[0];
+      if (!product) return;
+
+      const variant = product.variants?.[0];
+      const hasVariants =
+        (product.variants?.length ?? 0) > 1 &&
+        variant?.title &&
+        variant.title !== "Default Title";
+      const variantId = String(variant?.id ?? "").split("/").pop();
+
+      setPreviewProduct({
+        title: hasVariants ? `${product.title} (${variant.title})` : product.title,
+        price: variant?.price
+          ? formatPrice(variant.price, currencyCode)
+          : SAMPLE_PRICE,
+        url: `https://${shop}/products/${product.handle}${hasVariants && variantId ? `?variant=${variantId}` : ""}`,
+      });
+    } catch {
+      // El comerciante cerró el selector sin elegir
+    }
+  };
+
+  saveRef.current = isDirty ? handleSave : null;
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        saveRef.current?.();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return (
     <s-page heading="Multi-Vendor WhatsApp Router">
+      {isCustomized && (
+        <s-button
+          slot="secondary-actions"
+          icon="reset"
+          commandFor={RESET_MODAL_ID}
+          command="--show"
+        >
+          Configuración recomendada
+        </s-button>
+      )}
+
+      <s-modal id={RESET_MODAL_ID} heading="Volver a la configuración recomendada">
+        <s-stack direction="block" gap="base">
+          <s-text>
+            Se aplicará la configuración con la que la app funciona mejor para
+            la mayoría de tiendas. Tus vendedores y sus números se conservan.
+          </s-text>
+          <s-unordered-list>
+            <s-list-item>Todos los vendedores activos</s-list-item>
+            <s-list-item>Prioridad normal para todos (reparto por igual)</s-list-item>
+            <s-list-item>Sin horarios: disponibles siempre</s-list-item>
+            <s-list-item>Mensaje recomendado</s-list-item>
+          </s-unordered-list>
+          <s-text tone="neutral">
+            No se guarda nada hasta que pulses Guardar: podrás revisar el
+            resultado o descartarlo.
+          </s-text>
+        </s-stack>
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          commandFor={RESET_MODAL_ID}
+          command="--hide"
+          onClick={resetAll}
+        >
+          Aplicar
+        </s-button>
+        <s-button
+          slot="secondary-actions"
+          commandFor={RESET_MODAL_ID}
+          command="--hide"
+        >
+          Cancelar
+        </s-button>
+      </s-modal>
+
       <SetupGuide
         hasVendors={activeCount > 0}
         links={editorLinks}
@@ -942,7 +1167,7 @@ export default function Index() {
         )}
 
         <s-stack direction="block" gap="base">
-          {rows.map((row) => {
+          {rows.map((row, index) => {
             const hours = row.scheduled
               ? toHours({ start: row.start, end: row.end, days: row.days })
               : null;
@@ -950,6 +1175,8 @@ export default function Index() {
               <VendorRow
                 key={row.id}
                 row={row}
+                index={index}
+                count={rows.length}
                 errors={validation.errors.get(row.id) ?? {}}
                 previewMessage={previewMessage}
                 stats={stats.byPhone[digitsOnly(row.phone)] ?? null}
@@ -960,6 +1187,8 @@ export default function Index() {
                 }
                 onDuty={hours && clock ? isOnDuty(hours, clock) : null}
                 onChange={updateRow}
+                onMove={moveRow}
+                onReset={resetRow}
                 onRemove={removeRow}
               />
             );
@@ -992,9 +1221,39 @@ export default function Index() {
           onInput={(e) => setMessage(e.currentTarget.value)}
         ></s-text-area>
 
+        <s-stack direction="inline" gap="base" alignItems="center">
+          {message.trim() !== DEFAULT_MESSAGE && (
+            <s-button
+              variant="tertiary"
+              icon="undo"
+              onClick={() => setMessage(DEFAULT_MESSAGE)}
+            >
+              Usar mensaje recomendado
+            </s-button>
+          )}
+          <s-button variant="tertiary" icon="product" onClick={pickPreviewProduct}>
+            {previewProduct
+              ? "Cambiar producto de ejemplo"
+              : "Previsualizar con un producto real"}
+          </s-button>
+          {previewProduct && (
+            <s-button
+              variant="tertiary"
+              icon="x"
+              onClick={() => setPreviewProduct(null)}
+            >
+              Volver al ejemplo
+            </s-button>
+          )}
+        </s-stack>
+
         <s-box padding="base" background="subdued" borderRadius="base">
           <s-stack direction="block" gap="small-300">
-            <s-text type="strong">Vista previa</s-text>
+            <s-text type="strong">
+              {previewProduct
+                ? "Vista previa con tu producto"
+                : "Vista previa (producto de ejemplo)"}
+            </s-text>
             <s-text>{previewMessage}</s-text>
           </s-stack>
         </s-box>
@@ -1023,10 +1282,22 @@ export default function Index() {
             Usa &quot;Probar en WhatsApp&quot; para confirmar que el número es
             correcto antes de publicarlo en tu tienda.
           </s-list-item>
+          <s-list-item>
+            ¿Te perdiste configurando? &quot;Configuración recomendada&quot;
+            (arriba) lo deja como al principio sin borrar vendedores. Cada
+            vendedor tiene también su propio &quot;Restablecer&quot; en
+            Opciones.
+          </s-list-item>
+          <s-list-item>
+            El aspecto del botón (colores, tamaño, texto) se ajusta en el editor
+            de temas. Para volver a sus valores iniciales, elimina el bloque y
+            agrégalo de nuevo.
+          </s-list-item>
+          <s-list-item>Atajo: Ctrl+S (⌘S en Mac) guarda los cambios.</s-list-item>
         </s-unordered-list>
       </s-section>
 
-      <ui-save-bar id={SAVE_BAR_ID}>
+      <ui-save-bar id={SAVE_BAR_ID} discardConfirmation="">
         <button
           variant="primary"
           onClick={handleSave}
