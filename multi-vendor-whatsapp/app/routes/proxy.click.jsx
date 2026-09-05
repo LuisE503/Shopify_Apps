@@ -5,6 +5,10 @@ const MAX_NAME_LENGTH = 80;
 const MAX_PHONE_LENGTH = 20;
 const MAX_PRODUCT_LENGTH = 160;
 
+// Los clics de hace más de medio año no aportan al panel (muestra 30 días)
+const RETENTION_DAYS = 180;
+const PRUNE_PROBABILITY = 0.02;
+
 /**
  * Registra un clic en el botón de WhatsApp.
  *
@@ -47,6 +51,15 @@ export const action = async ({ request }) => {
   await db.vendorClick.create({
     data: { shop, vendorPhone, vendorName, productTitle },
   });
+
+  // Higiene de datos: de vez en cuando se borran los clics antiguos de esta
+  // tienda. Va sin esperar y sin fallar: nunca debe retrasar la respuesta.
+  if (Math.random() < PRUNE_PROBABILITY) {
+    const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    db.vendorClick
+      .deleteMany({ where: { shop, createdAt: { lt: cutoff } } })
+      .catch(() => {});
+  }
 
   return new Response(null, { status: 204 });
 };

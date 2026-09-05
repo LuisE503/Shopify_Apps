@@ -90,3 +90,26 @@
     display: none;
   }
 }
+
+/* Anillo que late: opcional, para llamar la atención sin resultar invasivo */
+@keyframes mvw-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(37, 211, 102, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 14px rgba(37, 211, 102, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 211, 102, 0);
+  }
+}
+
+.mvw-float--pulse .mvw-float__button {
+  animation: mvw-pulse 2.8s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mvw-float--pulse .mvw-float__button {
+    animation: none;
+  }
+}

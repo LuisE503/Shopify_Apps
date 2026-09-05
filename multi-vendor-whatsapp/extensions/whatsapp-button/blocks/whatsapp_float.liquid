@@ -92,7 +92,7 @@
   {{ 'whatsapp-float.css' | asset_url | stylesheet_tag }}
 
   <div
-    class="mvw-float mvw-float--{{ block.settings.position }}{% if block.settings.hide_on_mobile %} mvw-float--hide-mobile{% endif %}"
+    class="mvw-float mvw-float--{{ block.settings.position }}{% if block.settings.hide_on_mobile %} mvw-float--hide-mobile{% endif %}{% if block.settings.attention_pulse %} mvw-float--pulse{% endif %}"
     data-mvw-block
     style="
       --mvw-bg: {{ block.settings.bg_color }};
@@ -160,6 +160,13 @@
     {
       "type": "paragraph",
       "content": "Muestra un botón fijo de WhatsApp en todas las páginas de la tienda. Los clics se reparten entre los mismos vendedores del panel de la app."
+    },
+    {
+      "type": "checkbox",
+      "id": "attention_pulse",
+      "label": "Animación sutil para llamar la atención",
+      "info": "Un anillo que late cada pocos segundos alrededor del botón. Se desactiva solo para quien tiene reducido el movimiento en su dispositivo.",
+      "default": false
     },
     {
       "type": "checkbox",

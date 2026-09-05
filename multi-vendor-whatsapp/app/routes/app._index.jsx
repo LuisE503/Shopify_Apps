@@ -17,7 +17,46 @@ const MIN_WEIGHT = 1;
 const MAX_WEIGHT = 5;
 const WEIGHT_OPTIONS = [1, 2, 3, 4, 5];
 const STATS_DAYS = 30;
+const CHART_DAYS = 14;
 const TOP_PRODUCTS = 5;
+const TOP_VENDORS = 5;
+
+// Prefijos telefónicos más habituales para el público de la app. Se elige el
+// prefijo más largo que coincida, así "503" gana a "5" y "1809" a "1".
+const COUNTRY_CODES = [
+  ["1809", "República Dominicana"],
+  ["1829", "República Dominicana"],
+  ["1849", "República Dominicana"],
+  ["1787", "Puerto Rico"],
+  ["1939", "Puerto Rico"],
+  ["1", "EE. UU. / Canadá"],
+  ["34", "España"],
+  ["351", "Portugal"],
+  ["52", "México"],
+  ["501", "Belice"],
+  ["502", "Guatemala"],
+  ["503", "El Salvador"],
+  ["504", "Honduras"],
+  ["505", "Nicaragua"],
+  ["506", "Costa Rica"],
+  ["507", "Panamá"],
+  ["509", "Haití"],
+  ["51", "Perú"],
+  ["53", "Cuba"],
+  ["54", "Argentina"],
+  ["55", "Brasil"],
+  ["56", "Chile"],
+  ["57", "Colombia"],
+  ["58", "Venezuela"],
+  ["591", "Bolivia"],
+  ["593", "Ecuador"],
+  ["595", "Paraguay"],
+  ["598", "Uruguay"],
+  ["39", "Italia"],
+  ["44", "Reino Unido"],
+  ["49", "Alemania"],
+  ["33", "Francia"],
+];
 
 const DEFAULT_MESSAGE = "Hola, me interesa este producto: {producto} - {url}";
 
@@ -60,6 +99,26 @@ const TIME_OPTIONS = (() => {
 })();
 
 const digitsOnly = (value) => String(value ?? "").replace(/\D/g, "");
+
+// "El Salvador (+503)" bajo el campo del número: confirma al instante que el
+// código de país es el correcto, el error más común al cargar vendedores
+const countryHint = (phone) => {
+  const digits = digitsOnly(phone);
+  const generic = "Código de país + número";
+  if (digits.length < 3) return generic;
+  const match = COUNTRY_CODES.filter(([code]) => digits.startsWith(code)).sort(
+    (a, b) => b[0].length - a[0].length,
+  )[0];
+  return match ? `${match[1]} (+${match[0]}) · ${generic.toLowerCase()}` : generic;
+};
+
+const initialsOf = (name) =>
+  String(name ?? "")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("");
 
 // Se aceptan separadores comunes al escribir: +503 6860-2600, (503) 686 02600.
 // Cualquier otro carácter (letras, símbolos) se marca como error visible.
@@ -279,13 +338,45 @@ const relativeTime = (isoDate) => {
   return `hace ${days} día${days === 1 ? "" : "s"}`;
 };
 
-/** Clics de los últimos 30 días: por vendedor, y los productos más pedidos. */
-const loadClickStats = async (shop) => {
-  const since = new Date(Date.now() - STATS_DAYS * 24 * 60 * 60 * 1000);
-  const empty = { byPhone: {}, topProducts: [], total: 0 };
+// Fecha "YYYY-MM-DD" y etiqueta corta ("lun 4") en la zona horaria de la tienda:
+// un clic a las 23:30 en El Salvador es de ese día, no del siguiente en UTC
+const dayKey = (date, timeZone) => {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: timeZone ?? undefined,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+};
+
+const dayLabel = (date, timeZone) => {
+  try {
+    return new Intl.DateTimeFormat("es", {
+      timeZone: timeZone ?? undefined,
+      weekday: "short",
+      day: "numeric",
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(5, 10);
+  }
+};
+
+/**
+ * Clics de los últimos 30 días: por vendedor, los productos más pedidos y
+ * la serie diaria de las últimas dos semanas para la gráfica.
+ */
+const loadClickStats = async (shop, timeZone) => {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const since = new Date(Date.now() - STATS_DAYS * dayMs);
+  const chartSince = new Date(Date.now() - CHART_DAYS * dayMs);
+  const empty = { byPhone: {}, topProducts: [], byDay: [], total: 0 };
 
   try {
-    const [byVendor, byProduct] = await Promise.all([
+    const [byVendor, byProduct, recent] = await Promise.all([
       db.vendorClick.groupBy({
         by: ["vendorPhone"],
         where: { shop, createdAt: { gte: since } },
@@ -299,6 +390,10 @@ const loadClickStats = async (shop) => {
         orderBy: { _count: { productTitle: "desc" } },
         take: TOP_PRODUCTS,
       }),
+      db.vendorClick.findMany({
+        where: { shop, createdAt: { gte: chartSince } },
+        select: { createdAt: true },
+      }),
     ]);
 
     const byPhone = {};
@@ -311,9 +406,22 @@ const loadClickStats = async (shop) => {
       total += row._count._all;
     }
 
+    const countsByDay = new Map();
+    for (const row of recent) {
+      const key = dayKey(row.createdAt, timeZone);
+      countsByDay.set(key, (countsByDay.get(key) ?? 0) + 1);
+    }
+    const byDay = [];
+    for (let i = CHART_DAYS - 1; i >= 0; i -= 1) {
+      const date = new Date(Date.now() - i * dayMs);
+      const key = dayKey(date, timeZone);
+      byDay.push({ key, label: dayLabel(date, timeZone), count: countsByDay.get(key) ?? 0 });
+    }
+
     return {
       byPhone,
       total,
+      byDay,
       topProducts: byProduct.map((row) => ({
         title: row.productTitle,
         count: row._count._all,
@@ -461,8 +569,7 @@ const detectInstallation = async (admin) => {
 export const loader = async ({ request }) => {
   const { admin, session } = await authenticate.admin(request);
 
-  const [stats, install, response] = await Promise.all([
-    loadClickStats(session.shop),
+  const [install, response] = await Promise.all([
     detectInstallation(admin),
     admin.graphql(
       `#graphql
@@ -488,6 +595,9 @@ export const loader = async ({ request }) => {
   const storedVendors = installation?.vendors?.jsonValue;
   const timeZone = responseJson.data?.shop?.ianaTimezone ?? null;
   const currencyCode = responseJson.data?.shop?.currencyCode ?? "USD";
+
+  // Después del GraphQL: la serie diaria se agrupa en la zona horaria de la tienda
+  const stats = await loadClickStats(session.shop, timeZone);
 
   return {
     shop: session.shop,
@@ -673,7 +783,7 @@ function VendorRow({
           <s-text-field
             label="Número de WhatsApp"
             placeholder="Ej: 50371234567"
-            details="Código de país + número"
+            details={countryHint(row.phone)}
             value={row.phone}
             {...(errors.phone ? { error: errors.phone } : {})}
             onInput={(e) => onChange(row.id, "phone", e.currentTarget.value)}
@@ -681,6 +791,13 @@ function VendorRow({
         </s-grid>
 
         <s-stack direction="inline" gap="base" alignItems="center">
+          {row.name.trim() && (
+            <s-avatar
+              initials={initialsOf(row.name)}
+              alt={row.name}
+              size="small"
+            ></s-avatar>
+          )}
           <s-switch
             label="Activo"
             checked={row.active}
@@ -870,6 +987,26 @@ function SetupGuide({
   const allDone =
     hasVendors && Boolean(install?.productBlock) && Boolean(install?.floatEmbed);
 
+  // Con todo hecho, la guía se aparta: una línea y un enlace para volver a verla
+  const [showStepsAnyway, setShowStepsAnyway] = useState(false);
+
+  if (allDone && !showStepsAnyway) {
+    return (
+      <s-section heading="Puesta en marcha">
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-badge tone="success">Todo listo</s-badge>
+          <s-text>
+            Vendedores guardados y botones colocados en tu tema. Tus clientes
+            ya pueden escribirte.
+          </s-text>
+          <s-button variant="tertiary" onClick={() => setShowStepsAnyway(true)}>
+            Ver los pasos
+          </s-button>
+        </s-stack>
+      </s-section>
+    );
+  }
+
   return (
     <s-section heading="Puesta en marcha">
       <s-stack direction="block" gap="base">
@@ -947,12 +1084,19 @@ function SetupGuide({
   );
 }
 
+// Un solo indicador (clics): una sola tonalidad; el gris marca los días sin clics
+const BAR_COLOR = "#1a7f5a";
+const BAR_EMPTY = "#e3e5e7";
+const CHART_HEIGHT = 72;
+
 /**
- * Actividad de los últimos 30 días.
+ * Actividad de los últimos 30 días: gráfica diaria de dos semanas, reparto
+ * real entre vendedores y productos más consultados.
  *
- * @param stats  { total, topProducts }
+ * @param stats    { total, byDay, byPhone, topProducts }
+ * @param vendors  vendedores guardados, para mostrar nombres en vez de números
  */
-function ActivitySection({ stats }) {
+function ActivitySection({ stats, vendors }) {
   if (stats.total === 0) {
     return (
       <s-section slot="aside" heading={`Actividad (${STATS_DAYS} días)`}>
@@ -964,13 +1108,136 @@ function ActivitySection({ stats }) {
     );
   }
 
+  const byDay = stats.byDay ?? [];
+  const maxDay = Math.max(1, ...byDay.map((d) => d.count));
+  const chartTotal = byDay.reduce((sum, d) => sum + d.count, 0);
+
+  const nameByPhone = new Map(vendors.map((v) => [v.phone, v.name]));
+  const perVendor = Object.entries(stats.byPhone)
+    .map(([phone, info]) => ({
+      phone,
+      name: nameByPhone.get(phone) ?? `+${phone}`,
+      count: info.count,
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, TOP_VENDORS);
+  const maxVendor = Math.max(1, ...perVendor.map((v) => v.count));
+
   return (
     <s-section slot="aside" heading={`Actividad (${STATS_DAYS} días)`}>
       <s-stack direction="block" gap="base">
         <s-text>
-          <s-text type="strong">{stats.total}</s-text> clic(s) en total. El
-          detalle por vendedor está en cada tarjeta.
+          <s-text type="strong">{stats.total}</s-text> clic(s) en total.
         </s-text>
+
+        {byDay.length > 0 && (
+          <s-stack direction="block" gap="small-300">
+            <s-text type="strong">{`Últimos ${CHART_DAYS} días`}</s-text>
+            <div
+              role="img"
+              aria-label={`${chartTotal} clic(s) en los últimos ${CHART_DAYS} días`}
+              style={{
+                display: "flex",
+                alignItems: "flex-end",
+                gap: "3px",
+                height: `${CHART_HEIGHT}px`,
+              }}
+            >
+              {byDay.map((day) => (
+                <div
+                  key={day.key}
+                  title={`${day.label}: ${day.count} clic(s)`}
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    alignItems: "flex-end",
+                    height: "100%",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: "100%",
+                      height: `${
+                        day.count > 0
+                          ? Math.max(6, Math.round((day.count / maxDay) * CHART_HEIGHT))
+                          : 2
+                      }px`,
+                      background: day.count > 0 ? BAR_COLOR : BAR_EMPTY,
+                      borderRadius: "3px 3px 0 0",
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: "3px" }}>
+              {byDay.map((day, index) => (
+                <div
+                  key={day.key}
+                  style={{
+                    flex: 1,
+                    textAlign: "center",
+                    fontSize: "11px",
+                    color: "#6b7280",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                  }}
+                >
+                  {index % 2 === 0 ? day.label : ""}
+                </div>
+              ))}
+            </div>
+            <details>
+              <summary style={{ cursor: "pointer", fontSize: "12px", color: "#6b7280" }}>
+                Ver como tabla
+              </summary>
+              <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse" }}>
+                <tbody>
+                  {byDay.map((day) => (
+                    <tr key={day.key}>
+                      <td style={{ padding: "2px 0" }}>{day.label}</td>
+                      <td style={{ textAlign: "right" }}>{day.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          </s-stack>
+        )}
+
+        {perVendor.length > 0 && (
+          <s-stack direction="block" gap="small-300">
+            <s-text type="strong">Reparto entre vendedores</s-text>
+            {perVendor.map((vendor) => (
+              <div
+                key={vendor.phone}
+                style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: "2px 8px" }}
+              >
+                <s-text>{vendor.name}</s-text>
+                <s-text tone="neutral">
+                  {`${vendor.count} · ${Math.round((vendor.count / stats.total) * 100)}%`}
+                </s-text>
+                <div
+                  style={{
+                    gridColumn: "1 / -1",
+                    height: "6px",
+                    background: BAR_EMPTY,
+                    borderRadius: "3px",
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${Math.round((vendor.count / maxVendor) * 100)}%`,
+                      height: "100%",
+                      background: BAR_COLOR,
+                      borderRadius: "3px",
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </s-stack>
+        )}
+
         {stats.topProducts.length > 0 && (
           <s-stack direction="block" gap="small-300">
             <s-text type="strong">Productos más consultados</s-text>
@@ -1177,6 +1444,18 @@ export default function Index() {
     setMessage(savedMessage);
   };
 
+  // Chips "+ {producto}": el comerciante no tiene por qué saber la sintaxis
+  const insertPlaceholder = (key) =>
+    setMessage((current) => {
+      const trimmed = current.replace(/\s+$/, "");
+      return `${trimmed}${trimmed ? " " : ""}{${key}}`;
+    });
+
+  // Sin {producto} o {url} el vendedor recibe un mensaje sin contexto
+  const missingPlaceholders = ["producto", "url"].filter(
+    (key) => !message.includes(`{${key}}`),
+  );
+
   const moveRow = (id, delta) =>
     setRows((current) => {
       const from = current.findIndex((r) => r.id === id);
@@ -1288,7 +1567,7 @@ export default function Index() {
       <SetupGuide
         hasVendors={activeCount > 0}
         links={editorLinks}
-        storefront={`https://${shop}`}
+        storefront={`https://${shop}/collections/all`}
         install={install}
         onRefresh={() => revalidator.revalidate()}
         refreshing={revalidator.state === "loading"}
@@ -1371,6 +1650,17 @@ export default function Index() {
           color), su precio y su enlace.
         </s-paragraph>
 
+        {message.trim() && missingPlaceholders.length > 0 && (
+          <s-banner
+            heading={`Tu mensaje no incluye ${missingPlaceholders.map((k) => `{${k}}`).join(" ni ")}`}
+            tone="warning"
+          >
+            Sin {"{producto}"} el vendedor no sabrá qué producto le interesa al
+            cliente; sin {"{url}"} no podrá abrirlo. Añádelos con los botones
+            de abajo.
+          </s-banner>
+        )}
+
         <s-text-area
           label="Plantilla del mensaje"
           rows={3}
@@ -1383,6 +1673,16 @@ export default function Index() {
         ></s-text-area>
 
         <s-stack direction="inline" gap="base" alignItems="center">
+          {["producto", "precio", "url"].map((key) => (
+            <s-button
+              key={key}
+              variant="tertiary"
+              onClick={() => insertPlaceholder(key)}
+              {...(message.includes(`{${key}}`) ? { disabled: true } : {})}
+            >
+              {`+ {${key}}`}
+            </s-button>
+          ))}
           {message.trim() !== DEFAULT_MESSAGE && (
             <s-button
               variant="tertiary"
@@ -1420,7 +1720,7 @@ export default function Index() {
         </s-box>
       </s-section>
 
-      <ActivitySection stats={stats} />
+      <ActivitySection stats={stats} vendors={saved} />
 
       <s-section slot="aside" heading="¿Cómo funciona?">
         <s-unordered-list>
