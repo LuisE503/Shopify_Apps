@@ -1,0 +1,233 @@
+/*
+ * Gráficos e indicadores del panel.
+ * Un solo indicador (clics) -> una sola tonalidad; el gris marca la ausencia.
+ * Los textos usan los colores de texto, nunca el color de la serie.
+ */
+:root {
+  --mvw-bar: #1a7f5a;
+  --mvw-bar-soft: #cfe8dc;
+  --mvw-empty: #e3e5e7;
+  --mvw-line: #e3e5e7;
+  --mvw-muted: #6b7280;
+  --mvw-ink: #303030;
+  --mvw-up: #1a7f5a;
+  --mvw-down: #b42318;
+}
+
+/* Indicadores grandes ------------------------------------------------ */
+
+.mvw-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.mvw-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--mvw-line);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.mvw-tile__label {
+  font-size: 12px;
+  color: var(--mvw-muted);
+}
+
+.mvw-tile__value {
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  color: var(--mvw-ink);
+  overflow-wrap: anywhere;
+}
+
+.mvw-tile__value--text {
+  font-size: 18px;
+}
+
+.mvw-tile__delta {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mvw-tile__delta--up {
+  color: var(--mvw-up);
+}
+
+.mvw-tile__delta--down {
+  color: var(--mvw-down);
+}
+
+.mvw-tile__delta--flat {
+  color: var(--mvw-muted);
+}
+
+.mvw-tile__hint {
+  font-size: 12px;
+  color: var(--mvw-muted);
+}
+
+/* Barras -------------------------------------------------------------- */
+
+.mvw-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mvw-chart__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: var(--mvw-chart-height, 96px);
+}
+
+.mvw-chart__col {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  min-width: 0;
+  height: 100%;
+}
+
+.mvw-chart__bar {
+  width: 100%;
+  border-radius: 3px 3px 0 0;
+  background: var(--mvw-bar);
+  transition: opacity 0.12s ease;
+}
+
+.mvw-chart__bar--empty {
+  background: var(--mvw-empty);
+}
+
+.mvw-chart__col:hover .mvw-chart__bar {
+  opacity: 0.75;
+}
+
+.mvw-chart__labels {
+  display: flex;
+  gap: 3px;
+}
+
+.mvw-chart__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--mvw-muted);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.mvw-chart__table summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--mvw-muted);
+}
+
+.mvw-chart__table table {
+  width: 100%;
+  margin-top: 6px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.mvw-chart__table td {
+  padding: 3px 0;
+  border-bottom: 1px solid #f1f2f3;
+}
+
+.mvw-chart__table td:last-child {
+  text-align: right;
+}
+
+/* Reparto entre vendedores ------------------------------------------- */
+
+.mvw-share {
+  display: grid;
+  gap: 12px;
+}
+
+.mvw-share__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 8px;
+  align-items: baseline;
+}
+
+.mvw-share__meta {
+  font-size: 12px;
+  color: var(--mvw-muted);
+}
+
+.mvw-share__track {
+  position: relative;
+  grid-column: 1 / -1;
+  height: 6px;
+  overflow: visible;
+  border-radius: 3px;
+  background: var(--mvw-empty);
+}
+
+.mvw-share__fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--mvw-bar);
+}
+
+/* Marca vertical: lo que debería recibir según su prioridad configurada */
+.mvw-share__expected {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  background: var(--mvw-ink);
+  opacity: 0.55;
+}
+
+.mvw-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--mvw-muted);
+}
+
+.mvw-legend__swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 5px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+/* Estado vacío -------------------------------------------------------- */
+
+.mvw-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 24px 20px;
+  border: 1px dashed #c9cccf;
+  border-radius: 12px;
+  color: var(--mvw-muted);
+  text-align: center;
+}
+
+.mvw-empty__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--mvw-ink);
+}
+
+.mvw-pre {
+  white-space: pre-wrap;
+}
