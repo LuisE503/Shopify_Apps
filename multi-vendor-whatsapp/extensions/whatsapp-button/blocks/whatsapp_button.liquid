@@ -53,28 +53,35 @@
     {%- assign separator = '' -%}
     {%- for vendor in vendors -%}
       {%- if vendor.phone != blank and vendor.active != false -%}
-        {{ separator }}{"name": {{ vendor.name | json }}, "phone": {{ vendor.phone | json }}, "weight": {{ vendor.weight | default: 1 | json }}, "hours": {% if vendor.hours %}{"start": {{ vendor.hours.start | json }}, "end": {{ vendor.hours.end | json }}, "days": {{ vendor.hours.days | json }}}{% else %}null{% endif %}}
+        {{ separator }}{"name": {{ vendor.name | json }}, "phone": {{ vendor.phone | json }}, "weight": {{ vendor.weight | default: 1 | json }}, "tags": {% if vendor.tags %}{{ vendor.tags | json }}{% else %}[]{% endif %}, "hours": {% if vendor.hours %}{"start": {{ vendor.hours.start | json }}, "end": {{ vendor.hours.end | json }}, "days": {{ vendor.hours.days | json }}}{% else %}null{% endif %}}
         {%- assign separator = ',' -%}
       {%- endif -%}
     {%- endfor -%}
     ]
   {%- endcapture -%}
 
-  {%- assign default_message = 'Hola, me interesa este producto: {producto} - {url}' -%}
+  {%- comment -%} Misma plantilla recomendada que en el panel de la app {%- endcomment -%}
+  {%- capture default_message -%}
+Hola, me interesa este producto:
+{producto} - {precio}
+Cantidad: {cantidad}
+{url}
+  {%- endcapture -%}
   {%- assign message_template = app.metafields.whatsapp_router.message.value | default: default_message -%}
   {%- assign base_product_url = shop.url | append: product.url -%}
-  {%- assign product_price = product.selected_or_first_available_variant.price | money -%}
+  {%- assign product_price = selected_variant.price | money -%}
+  {%- assign product_sku = selected_variant.sku | default: '' -%}
 
   {%- comment -%}
-    Variantes (talla, color...) con su precio y stock. El JavaScript usa este
-    mapa para nombrar la variante que el cliente tiene seleccionada.
+    Variantes (talla, color...) con su precio, SKU y stock. El JavaScript usa
+    este mapa para describir la variante que el cliente tiene seleccionada.
   {%- endcomment -%}
   {%- capture variants_json -%}
     {
     {%- assign variant_separator = '' -%}
     {%- unless product.has_only_default_variant -%}
       {%- for variant in product.variants -%}
-        {{ variant_separator }}"{{ variant.id }}": {"title": {{ variant.title | json }}, "price": {{ variant.price | money | json }}, "available": {{ variant.available | json }}}
+        {{ variant_separator }}"{{ variant.id }}": {"title": {{ variant.title | json }}, "price": {{ variant.price | money | json }}, "sku": {{ variant.sku | default: '' | json }}, "available": {{ variant.available | json }}}
         {%- assign variant_separator = ',' -%}
       {%- endfor -%}
     {%- endunless -%}
@@ -91,6 +98,8 @@
   {%- assign whatsapp_message = message_template
     | replace: '{producto}', product_label
     | replace: '{precio}', product_price
+    | replace: '{cantidad}', '1'
+    | replace: '{sku}', product_sku
     | replace: '{url}', product_url -%}
 
   {%- comment -%}
@@ -148,6 +157,7 @@
   >
     <script type="application/json" data-mvw-config>
       {
+        "mode": "product",
         "vendors": {{ vendors_json }},
         "shopUtcOffset": {{ 'now' | date: '%z' | json }},
         "clickEndpoint": "/apps/whatsapp-router/click",
@@ -155,13 +165,21 @@
         "productTitle": {{ product.title | json }},
         "productUrl": {{ base_product_url | json }},
         "productPrice": {{ product_price | json }},
+        "productSku": {{ product_sku | json }},
+        "productTags": {{ product.tags | json }},
         "productAvailable": {{ product.available | json }},
         "variants": {{ variants_json }},
+        "quantitySelector": {{ block.settings.quantity_selector | json }},
         "outOfStockBehavior": {{ block.settings.out_of_stock_behavior | json }},
         "outOfStockLabel": {{ block.settings.out_of_stock_label | json }},
         "defaultLabel": {{ block.settings.label | json }},
         "hideAddToCart": {{ block.settings.hide_add_to_cart | json }},
-        "customSelector": {{ block.settings.custom_selector | json }}
+        "customSelector": {{ block.settings.custom_selector | json }},
+        "availability": {
+          "enabled": {{ block.settings.show_availability | json }},
+          "onlineText": {{ block.settings.online_text | json }},
+          "offlineText": {{ block.settings.offline_text | json }}
+        }
       }
     </script>
 
@@ -179,6 +197,12 @@
       {%- endif -%}
       <span class="mvw-button__label" data-mvw-label>{{ button_label }}</span>
     </a>
+
+    {%- comment -%} "En línea" / "Fuera de horario": lo rellena el JavaScript {%- endcomment -%}
+    <div class="mvw-status" data-mvw-status hidden>
+      <span class="mvw-status__dot" aria-hidden="true"></span>
+      <span data-mvw-status-text></span>
+    </div>
 
     {%- if block.settings.show_note and block.settings.note_text != blank -%}
       <div class="mvw-note">{{ block.settings.note_text }}</div>
@@ -312,6 +336,30 @@
     },
     {
       "type": "header",
+      "content": "Disponibilidad en vivo"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_availability",
+      "label": "Mostrar si hay alguien atendiendo",
+      "info": "Usa los horarios de la app. Solo aparece si al menos un vendedor tiene horario configurado.",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "online_text",
+      "label": "Texto cuando hay alguien en turno",
+      "default": "En línea · te respondemos en minutos"
+    },
+    {
+      "type": "text",
+      "id": "offline_text",
+      "label": "Texto fuera de horario",
+      "info": "Puedes usar {dia} y {hora}: se reemplazan por la próxima apertura (hoy, mañana, el lunes…).",
+      "default": "Fuera de horario · te respondemos {dia} a las {hora}"
+    },
+    {
+      "type": "header",
       "content": "Texto explicativo"
     },
     {
@@ -395,6 +443,16 @@
       "id": "custom_selector",
       "label": "Selector CSS adicional",
       "info": "Opcional. Solo si tu tema usa un botón que no se oculta automáticamente."
+    },
+    {
+      "type": "header",
+      "content": "Avanzado"
+    },
+    {
+      "type": "text",
+      "id": "quantity_selector",
+      "label": "Selector CSS del campo de cantidad",
+      "info": "Opcional. La cantidad ({cantidad}) se lee sola del selector estándar de Shopify; cámbialo solo si tu tema usa uno distinto."
     }
   ]
 }

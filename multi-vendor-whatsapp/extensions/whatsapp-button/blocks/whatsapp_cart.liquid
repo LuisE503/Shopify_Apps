@@ -1,0 +1,334 @@
+{%- comment -%}
+  Botón "Enviar pedido por WhatsApp" para la página del carrito.
+
+  Convierte el carrito completo en un pedido: cada artículo con su variante,
+  cantidad y precio, el total y un enlace que recrea el carrito en la tienda
+  para que el vendedor lo vea con un clic. Comparte estilos y reparto con el
+  botón de producto (assets/whatsapp-button.css y whatsapp-router.js).
+{%- endcomment -%}
+
+{%- assign vendors = app.metafields.whatsapp_router.vendors.value -%}
+
+{%- assign active_count = 0 -%}
+{%- for vendor in vendors -%}
+  {%- if vendor.phone != blank and vendor.active != false -%}
+    {%- assign active_count = active_count | plus: 1 -%}
+  {%- endif -%}
+{%- endfor -%}
+
+{%- if active_count > 0 and cart.item_count > 0 -%}
+
+  {%- capture vendors_json -%}
+    [
+    {%- assign separator = '' -%}
+    {%- for vendor in vendors -%}
+      {%- if vendor.phone != blank and vendor.active != false -%}
+        {{ separator }}{"name": {{ vendor.name | json }}, "phone": {{ vendor.phone | json }}, "weight": {{ vendor.weight | default: 1 | json }}, "tags": {% if vendor.tags %}{{ vendor.tags | json }}{% else %}[]{% endif %}, "hours": {% if vendor.hours %}{"start": {{ vendor.hours.start | json }}, "end": {{ vendor.hours.end | json }}, "days": {{ vendor.hours.days | json }}}{% else %}null{% endif %}}
+        {%- assign separator = ',' -%}
+      {%- endif -%}
+    {%- endfor -%}
+    ]
+  {%- endcapture -%}
+
+  {%- capture default_cart_message -%}
+Hola, quiero hacer este pedido:
+{pedido}
+Total: {total}
+{url}
+  {%- endcapture -%}
+  {%- assign cart_message_template = app.metafields.whatsapp_router.cart_message.value | default: default_cart_message -%}
+
+  {%- capture newline %}
+{% endcapture -%}
+
+  {%- comment -%} Pedido completo como mensaje de reserva (funciona sin JavaScript) {%- endcomment -%}
+  {%- capture cart_lines -%}
+    {%- for item in cart.items -%}
+      - {{ item.quantity }}× {{ item.product.title }}{% unless item.product.has_only_default_variant %} ({{ item.variant.title }}){% endunless %} — {{ item.final_line_price | money }}{% unless forloop.last %}{{ newline }}{% endunless %}
+    {%- endfor -%}
+  {%- endcapture -%}
+  {%- capture cart_permalink -%}{{ shop.url }}/cart/{% for item in cart.items %}{{ item.variant_id }}:{{ item.quantity }}{% unless forloop.last %},{% endunless %}{% endfor %}{%- endcapture -%}
+  {%- assign cart_total = cart.total_price | money -%}
+  {%- assign whatsapp_message = cart_message_template
+    | replace: '{pedido}', cart_lines
+    | replace: '{total}', cart_total
+    | replace: '{cantidad}', cart.item_count
+    | replace: '{url}', cart_permalink -%}
+
+  {%- capture cart_json -%}
+    {"item_count": {{ cart.item_count }}, "total_price": {{ cart.total_price }}, "currency": {{ cart.currency.iso_code | json }}, "items": [
+    {%- for item in cart.items -%}
+      {"variant_id": {{ item.variant_id }}, "quantity": {{ item.quantity }}, "product_title": {{ item.product.title | json }}, "variant_title": {% if item.product.has_only_default_variant %}null{% else %}{{ item.variant.title | json }}{% endif %}, "final_line_price": {{ item.final_line_price }}}{% unless forloop.last %},{% endunless %}
+    {%- endfor -%}
+    ]}
+  {%- endcapture -%}
+
+  {%- assign fallback_phone = '' -%}
+  {%- for vendor in vendors -%}
+    {%- if fallback_phone == '' and vendor.phone != blank and vendor.active != false -%}
+      {%- assign fallback_phone = vendor.phone -%}
+    {%- endif -%}
+  {%- endfor -%}
+  {%- assign encoded_message = whatsapp_message | url_encode | replace: '+', '%20' -%}
+  {%- assign fallback_link = 'https://wa.me/' | append: fallback_phone | append: '?text=' | append: encoded_message -%}
+
+  {{ 'whatsapp-button.css' | asset_url | stylesheet_tag }}
+
+  <div
+    class="mvw-block{% if block.settings.full_width_mobile %} mvw-block--mobile-full{% endif %}"
+    data-mvw-block
+    style="
+      --mvw-bg: {{ block.settings.bg_color }};
+      --mvw-text: {{ block.settings.text_color }};
+      --mvw-height: {{ block.settings.button_height }}px;
+      --mvw-font-size: {{ block.settings.font_size }}px;
+      --mvw-radius: {{ block.settings.corner_radius }}px;
+      --mvw-width: {{ block.settings.button_width }}px;
+      --mvw-align: {{ block.settings.alignment }};
+      --mvw-note-color: {{ block.settings.note_color }};
+      --mvw-space-top: {{ block.settings.spacing_top }}px;
+      --mvw-space-bottom: {{ block.settings.spacing_bottom }}px;
+    "
+    {{ block.shopify_attributes }}
+  >
+    <script type="application/json" data-mvw-config>
+      {
+        "mode": "cart",
+        "vendors": {{ vendors_json }},
+        "shopUtcOffset": {{ 'now' | date: '%z' | json }},
+        "clickEndpoint": "/apps/whatsapp-router/click",
+        "cartMessageTemplate": {{ cart_message_template | json }},
+        "shopUrl": {{ shop.url | json }},
+        "currency": {{ cart.currency.iso_code | json }},
+        "locale": {{ request.locale.iso_code | json }},
+        "cart": {{ cart_json }},
+        "hideAddToCart": false,
+        "customSelector": null,
+        "availability": {
+          "enabled": {{ block.settings.show_availability | json }},
+          "onlineText": {{ block.settings.online_text | json }},
+          "offlineText": {{ block.settings.offline_text | json }}
+        }
+      }
+    </script>
+
+    <a
+      class="mvw-button{% if block.settings.full_width %} mvw-button--full{% else %} mvw-button--fixed{% endif %}"
+      data-mvw-button
+      href="{{ fallback_link }}"
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      {%- if block.settings.show_icon -%}
+        <svg class="mvw-button__icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+          <path d="M17.47 14.38c-.3-.15-1.75-.86-2.02-.96-.27-.1-.47-.15-.67.15-.2.3-.77.96-.94 1.16-.17.2-.35.22-.64.08-.3-.15-1.25-.46-2.38-1.47-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.14-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.6-.92-2.2-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.79.37-.27.3-1.04 1.01-1.04 2.47s1.06 2.87 1.21 3.07c.15.2 2.1 3.2 5.08 4.49.71.3 1.26.49 1.69.63.71.22 1.36.19 1.87.12.57-.09 1.75-.72 2-1.41.25-.69.25-1.28.17-1.41-.07-.13-.27-.2-.57-.35zM12.05 21.5h-.01a9.44 9.44 0 0 1-4.8-1.32l-.35-.2-3.57.93.96-3.48-.23-.36a9.4 9.4 0 0 1-1.45-5.03c0-5.2 4.24-9.44 9.46-9.44 2.53 0 4.9.99 6.68 2.78a9.38 9.38 0 0 1 2.77 6.67c0 5.2-4.24 9.45-9.46 9.45zM20.46 3.53A11.35 11.35 0 0 0 12.05.02C5.79.02.7 5.1.7 11.35c0 2 .52 3.95 1.52 5.67L.6 23.02l6.13-1.6a11.33 11.33 0 0 0 5.42 1.38h.01c6.25 0 11.34-5.08 11.34-11.33 0-3.03-1.18-5.87-3.32-8.01z"/>
+        </svg>
+      {%- endif -%}
+      <span class="mvw-button__label">{{ block.settings.label }}</span>
+    </a>
+
+    <div class="mvw-status" data-mvw-status hidden>
+      <span class="mvw-status__dot" aria-hidden="true"></span>
+      <span data-mvw-status-text></span>
+    </div>
+
+    {%- if block.settings.show_note and block.settings.note_text != blank -%}
+      <div class="mvw-note">{{ block.settings.note_text }}</div>
+    {%- endif -%}
+  </div>
+
+  <script src="{{ 'whatsapp-router.js' | asset_url }}" defer></script>
+
+{%- elsif request.design_mode -%}
+  <div
+    class="mvw-placeholder"
+    style="display:flex;flex-direction:column;gap:4px;padding:12px 14px;border:1px dashed #8a8a8a;border-radius:8px;background:#f6f6f7;color:#303030;font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
+    {{ block.shopify_attributes }}
+  >
+    <strong>Pedido por WhatsApp (solo visible en el editor)</strong>
+    {%- if active_count == 0 -%}
+      <span>Agrega y guarda al menos un vendedor activo en la app Multi Vendor WhatsApp para activar este botón.</span>
+    {%- else -%}
+      <span>El botón aparece cuando el carrito tiene productos. Agrega alguno para verlo en la vista previa.</span>
+    {%- endif -%}
+  </div>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Pedido por WhatsApp (carrito)",
+  "target": "section",
+  "settings": [
+    {
+      "type": "paragraph",
+      "content": "Colócalo en la página del carrito. Envía todos los productos del carrito como un pedido: artículos, cantidades, total y un enlace que recrea el carrito. El texto del pedido se configura en la app."
+    },
+    {
+      "type": "text",
+      "id": "label",
+      "label": "Texto del botón",
+      "default": "Enviar pedido por WhatsApp"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_icon",
+      "label": "Mostrar icono de WhatsApp",
+      "default": true
+    },
+    {
+      "type": "select",
+      "id": "alignment",
+      "label": "Alineación",
+      "options": [
+        { "value": "left", "label": "Izquierda" },
+        { "value": "center", "label": "Centro" },
+        { "value": "right", "label": "Derecha" }
+      ],
+      "default": "left"
+    },
+    {
+      "type": "header",
+      "content": "Tamaño"
+    },
+    {
+      "type": "range",
+      "id": "button_height",
+      "label": "Alto del botón",
+      "min": 36,
+      "max": 72,
+      "step": 2,
+      "unit": "px",
+      "default": 48
+    },
+    {
+      "type": "range",
+      "id": "font_size",
+      "label": "Tamaño del texto",
+      "min": 12,
+      "max": 24,
+      "step": 1,
+      "unit": "px",
+      "default": 16
+    },
+    {
+      "type": "range",
+      "id": "corner_radius",
+      "label": "Redondeo de esquinas",
+      "min": 0,
+      "max": 40,
+      "step": 2,
+      "unit": "px",
+      "default": 8
+    },
+    {
+      "type": "checkbox",
+      "id": "full_width",
+      "label": "Ancho completo en computadora",
+      "default": true
+    },
+    {
+      "type": "range",
+      "id": "button_width",
+      "label": "Ancho del botón",
+      "min": 120,
+      "max": 640,
+      "step": 10,
+      "unit": "px",
+      "default": 320,
+      "info": "Solo se aplica si desactivas el ancho completo."
+    },
+    {
+      "type": "checkbox",
+      "id": "full_width_mobile",
+      "label": "Ancho completo en celular",
+      "default": true
+    },
+    {
+      "type": "header",
+      "content": "Colores"
+    },
+    {
+      "type": "color",
+      "id": "bg_color",
+      "label": "Color de fondo",
+      "default": "#25D366"
+    },
+    {
+      "type": "color",
+      "id": "text_color",
+      "label": "Color del texto",
+      "default": "#FFFFFF"
+    },
+    {
+      "type": "header",
+      "content": "Disponibilidad en vivo"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_availability",
+      "label": "Mostrar si hay alguien atendiendo",
+      "info": "Usa los horarios de la app. Solo aparece si al menos un vendedor tiene horario configurado.",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "online_text",
+      "label": "Texto cuando hay alguien en turno",
+      "default": "En línea · confirmamos tu pedido en minutos"
+    },
+    {
+      "type": "text",
+      "id": "offline_text",
+      "label": "Texto fuera de horario",
+      "info": "Puedes usar {dia} y {hora}: se reemplazan por la próxima apertura.",
+      "default": "Fuera de horario · confirmamos tu pedido {dia} a las {hora}"
+    },
+    {
+      "type": "header",
+      "content": "Texto explicativo"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_note",
+      "label": "Mostrar texto debajo del botón",
+      "default": true
+    },
+    {
+      "type": "richtext",
+      "id": "note_text",
+      "label": "Texto",
+      "default": "<p>Te confirmaremos disponibilidad, envío y forma de pago por WhatsApp.</p>"
+    },
+    {
+      "type": "color",
+      "id": "note_color",
+      "label": "Color del texto explicativo",
+      "default": "#6B7280"
+    },
+    {
+      "type": "header",
+      "content": "Espaciado"
+    },
+    {
+      "type": "range",
+      "id": "spacing_top",
+      "label": "Espacio arriba",
+      "min": 0,
+      "max": 60,
+      "step": 2,
+      "unit": "px",
+      "default": 12
+    },
+    {
+      "type": "range",
+      "id": "spacing_bottom",
+      "label": "Espacio abajo",
+      "min": 0,
+      "max": 60,
+      "step": 2,
+      "unit": "px",
+      "default": 12
+    }
+  ]
+}
+{% endschema %}

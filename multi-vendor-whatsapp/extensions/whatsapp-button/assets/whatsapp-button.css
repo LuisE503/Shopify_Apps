@@ -95,3 +95,31 @@
     transition: none;
   }
 }
+
+/* Disponibilidad en vivo: "En línea" / "Fuera de horario" bajo el botón */
+.mvw-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 0.5em;
+  color: var(--mvw-note-color, #6b7280);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.mvw-status__dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.mvw-status--online .mvw-status__dot {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2);
+}
+
+.mvw-status[hidden] {
+  display: none !important;
+}

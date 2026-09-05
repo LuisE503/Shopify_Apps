@@ -113,3 +113,36 @@
     animation: none;
   }
 }
+
+/* Punto de disponibilidad en la esquina del botón flotante */
+.mvw-float__button {
+  position: relative;
+}
+
+.mvw-float__status {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.mvw-float__status.mvw-status--online {
+  background: #22c55e;
+}
+
+.mvw-float__status[hidden] {
+  display: none !important;
+}
+
+.mvw-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

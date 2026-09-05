@@ -5,6 +5,10 @@
   Incrustaciones de aplicación, y aparece en todas las páginas sin tener que
   colocarlo bloque a bloque. Comparte el mismo reparto round robin que el
   botón de la ficha de producto (assets/whatsapp-router.js).
+
+  En una ficha de producto envía ese producto; fuera de ella, si el cliente
+  tiene artículos en el carrito, envía el pedido completo; si no, un mensaje
+  general.
 {%- endcomment -%}
 
 {%- assign vendors = app.metafields.whatsapp_router.vendors.value -%}
@@ -28,36 +32,59 @@
     {%- assign separator = '' -%}
     {%- for vendor in vendors -%}
       {%- if vendor.phone != blank and vendor.active != false -%}
-        {{ separator }}{"name": {{ vendor.name | json }}, "phone": {{ vendor.phone | json }}, "weight": {{ vendor.weight | default: 1 | json }}, "hours": {% if vendor.hours %}{"start": {{ vendor.hours.start | json }}, "end": {{ vendor.hours.end | json }}, "days": {{ vendor.hours.days | json }}}{% else %}null{% endif %}}
+        {{ separator }}{"name": {{ vendor.name | json }}, "phone": {{ vendor.phone | json }}, "weight": {{ vendor.weight | default: 1 | json }}, "tags": {% if vendor.tags %}{{ vendor.tags | json }}{% else %}[]{% endif %}, "hours": {% if vendor.hours %}{"start": {{ vendor.hours.start | json }}, "end": {{ vendor.hours.end | json }}, "days": {{ vendor.hours.days | json }}}{% else %}null{% endif %}}
         {%- assign separator = ',' -%}
       {%- endif -%}
     {%- endfor -%}
     ]
   {%- endcapture -%}
 
-  {%- comment -%}
-    En una ficha de producto se usa la plantilla del comerciante con el
-    producto; en el resto de páginas, un mensaje general.
-  {%- endcomment -%}
-  {%- assign default_message = 'Hola, me interesa este producto: {producto} - {url}' -%}
+  {%- comment -%} Mismas plantillas recomendadas que en el panel de la app {%- endcomment -%}
+  {%- capture default_message -%}
+Hola, me interesa este producto:
+{producto} - {precio}
+Cantidad: {cantidad}
+{url}
+  {%- endcapture -%}
+  {%- capture default_cart_message -%}
+Hola, quiero hacer este pedido:
+{pedido}
+Total: {total}
+{url}
+  {%- endcapture -%}
+  {%- assign message_template = app.metafields.whatsapp_router.message.value | default: default_message -%}
+  {%- assign cart_message_template = app.metafields.whatsapp_router.cart_message.value | default: default_cart_message -%}
+
+  {%- comment -%} Un salto de línea reutilizable para separar renglones del pedido {%- endcomment -%}
+  {%- capture newline %}
+{% endcapture -%}
+
+  {%- assign mode = 'generic' -%}
   {%- assign product_title_json = 'null' -%}
   {%- assign product_url_json = 'null' -%}
   {%- assign product_price_json = 'null' -%}
+  {%- assign product_sku_json = 'null' -%}
+  {%- assign product_tags_json = 'null' -%}
   {%- capture variants_json -%}{}{%- endcapture -%}
+  {%- capture cart_json -%}null{%- endcapture -%}
 
   {%- if product -%}
-    {%- assign message_template = app.metafields.whatsapp_router.message.value | default: default_message -%}
+    {%- assign mode = 'product' -%}
+    {%- assign selected_variant = product.selected_or_first_available_variant -%}
     {%- assign base_product_url = shop.url | append: product.url -%}
-    {%- assign product_price = product.selected_or_first_available_variant.price | money -%}
+    {%- assign product_price = selected_variant.price | money -%}
+    {%- assign product_sku = selected_variant.sku | default: '' -%}
     {%- capture product_title_json -%}{{ product.title | json }}{%- endcapture -%}
     {%- capture product_url_json -%}{{ base_product_url | json }}{%- endcapture -%}
     {%- capture product_price_json -%}{{ product_price | json }}{%- endcapture -%}
+    {%- capture product_sku_json -%}{{ product_sku | json }}{%- endcapture -%}
+    {%- capture product_tags_json -%}{{ product.tags | json }}{%- endcapture -%}
     {%- capture variants_json -%}
       {
       {%- assign variant_separator = '' -%}
       {%- unless product.has_only_default_variant -%}
         {%- for variant in product.variants -%}
-          {{ variant_separator }}"{{ variant.id }}": {"title": {{ variant.title | json }}, "price": {{ variant.price | money | json }}, "available": {{ variant.available | json }}}
+          {{ variant_separator }}"{{ variant.id }}": {"title": {{ variant.title | json }}, "price": {{ variant.price | money | json }}, "sku": {{ variant.sku | default: '' | json }}, "available": {{ variant.available | json }}}
           {%- assign variant_separator = ',' -%}
         {%- endfor -%}
       {%- endunless -%}
@@ -67,17 +94,41 @@
     {%- assign product_label = product.title -%}
     {%- assign product_url = base_product_url -%}
     {%- unless product.has_only_default_variant -%}
-      {%- assign selected_variant = product.selected_or_first_available_variant -%}
       {%- assign product_label = product.title | append: ' (' | append: selected_variant.title | append: ')' -%}
       {%- assign product_url = base_product_url | append: '?variant=' | append: selected_variant.id -%}
     {%- endunless -%}
     {%- assign whatsapp_message = message_template
       | replace: '{producto}', product_label
       | replace: '{precio}', product_price
+      | replace: '{cantidad}', '1'
+      | replace: '{sku}', product_sku
       | replace: '{url}', product_url -%}
+
+  {%- elsif block.settings.use_cart and cart.item_count > 0 -%}
+    {%- comment -%} Pedido completo como mensaje de reserva (sin JavaScript) {%- endcomment -%}
+    {%- capture cart_lines -%}
+      {%- for item in cart.items -%}
+        - {{ item.quantity }}× {{ item.product.title }}{% unless item.product.has_only_default_variant %} ({{ item.variant.title }}){% endunless %} — {{ item.final_line_price | money }}{% unless forloop.last %}{{ newline }}{% endunless %}
+      {%- endfor -%}
+    {%- endcapture -%}
+    {%- capture cart_permalink -%}{{ shop.url }}/cart/{% for item in cart.items %}{{ item.variant_id }}:{{ item.quantity }}{% unless forloop.last %},{% endunless %}{% endfor %}{%- endcapture -%}
+    {%- assign cart_total = cart.total_price | money -%}
+    {%- assign whatsapp_message = cart_message_template
+      | replace: '{pedido}', cart_lines
+      | replace: '{total}', cart_total
+      | replace: '{cantidad}', cart.item_count
+      | replace: '{url}', cart_permalink -%}
+
+    {%- capture cart_json -%}
+      {"item_count": {{ cart.item_count }}, "total_price": {{ cart.total_price }}, "currency": {{ cart.currency.iso_code | json }}, "items": [
+      {%- for item in cart.items -%}
+        {"variant_id": {{ item.variant_id }}, "quantity": {{ item.quantity }}, "product_title": {{ item.product.title | json }}, "variant_title": {% if item.product.has_only_default_variant %}null{% else %}{{ item.variant.title | json }}{% endif %}, "final_line_price": {{ item.final_line_price }}}{% unless forloop.last %},{% endunless %}
+      {%- endfor -%}
+      ]}
+    {%- endcapture -%}
+
   {%- else -%}
-    {%- assign message_template = block.settings.generic_message -%}
-    {%- assign whatsapp_message = message_template -%}
+    {%- assign whatsapp_message = block.settings.generic_message -%}
   {%- endif -%}
 
   {%- assign fallback_phone = '' -%}
@@ -105,16 +156,31 @@
   >
     <script type="application/json" data-mvw-config>
       {
+        "mode": {{ mode | json }},
+        "cartAware": {{ block.settings.use_cart | json }},
         "vendors": {{ vendors_json }},
         "shopUtcOffset": {{ 'now' | date: '%z' | json }},
         "clickEndpoint": "/apps/whatsapp-router/click",
         "messageTemplate": {{ message_template | json }},
+        "cartMessageTemplate": {{ cart_message_template | json }},
+        "genericMessage": {{ block.settings.generic_message | json }},
+        "shopUrl": {{ shop.url | json }},
+        "currency": {{ cart.currency.iso_code | json }},
+        "locale": {{ request.locale.iso_code | json }},
+        "cart": {{ cart_json }},
         "productTitle": {{ product_title_json }},
         "productUrl": {{ product_url_json }},
         "productPrice": {{ product_price_json }},
+        "productSku": {{ product_sku_json }},
+        "productTags": {{ product_tags_json }},
         "variants": {{ variants_json }},
         "hideAddToCart": false,
-        "customSelector": null
+        "customSelector": null,
+        "availability": {
+          "enabled": {{ block.settings.show_availability | json }},
+          "onlineText": {{ block.settings.online_text | json }},
+          "offlineText": {{ block.settings.offline_text | json }}
+        }
       }
     </script>
 
@@ -132,6 +198,10 @@
       {%- if block.settings.show_label and block.settings.label != blank -%}
         <span class="mvw-float__label">{{ block.settings.label }}</span>
       {%- endif -%}
+      {%- comment -%} Punto verde/gris: en turno o fuera de horario (lo rellena el JavaScript) {%- endcomment -%}
+      <span class="mvw-float__status" data-mvw-status hidden>
+        <span class="mvw-visually-hidden" data-mvw-status-text></span>
+      </span>
     </a>
   </div>
 
@@ -163,6 +233,13 @@
     },
     {
       "type": "checkbox",
+      "id": "use_cart",
+      "label": "Enviar el carrito como pedido",
+      "info": "Fuera de las fichas de producto, si el cliente tiene artículos en el carrito, el mensaje lleva el pedido completo (productos, cantidades, total y un enlace que recrea el carrito). El texto se configura en la app.",
+      "default": true
+    },
+    {
+      "type": "checkbox",
       "id": "attention_pulse",
       "label": "Animación sutil para llamar la atención",
       "info": "Un anillo que late cada pocos segundos alrededor del botón. Se desactiva solo para quien tiene reducido el movimiento en su dispositivo.",
@@ -184,8 +261,32 @@
       "type": "text",
       "id": "generic_message",
       "label": "Mensaje fuera de las fichas de producto",
-      "info": "Se usa en el inicio, colecciones y demás páginas. En una ficha de producto siempre se envía el mensaje configurado en la app, con el producto y la variante.",
+      "info": "Se usa en el inicio, colecciones y demás páginas cuando el carrito está vacío. En una ficha de producto siempre se envía el mensaje configurado en la app, con el producto y la variante.",
       "default": "Hola, quiero información sobre sus productos."
+    },
+    {
+      "type": "header",
+      "content": "Disponibilidad en vivo"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_availability",
+      "label": "Punto verde cuando hay alguien atendiendo",
+      "info": "Usa los horarios de la app. Solo aparece si al menos un vendedor tiene horario configurado.",
+      "default": true
+    },
+    {
+      "type": "text",
+      "id": "online_text",
+      "label": "Texto al pasar el cursor (en turno)",
+      "default": "En línea · te respondemos en minutos"
+    },
+    {
+      "type": "text",
+      "id": "offline_text",
+      "label": "Texto al pasar el cursor (fuera de horario)",
+      "info": "Puedes usar {dia} y {hora}: se reemplazan por la próxima apertura.",
+      "default": "Fuera de horario · te respondemos {dia} a las {hora}"
     },
     {
       "type": "header",

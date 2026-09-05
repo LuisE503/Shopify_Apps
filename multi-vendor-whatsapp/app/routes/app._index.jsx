@@ -10,6 +10,9 @@ import db from "../db.server";
 const METAFIELD_NAMESPACE = "whatsapp_router";
 const VENDORS_KEY = "vendors";
 const MESSAGE_KEY = "message";
+const CART_MESSAGE_KEY = "cart_message";
+const MAX_TAGS = 20;
+const MAX_TAG_LENGTH = 40;
 const SAVE_BAR_ID = "vendors-save-bar";
 const MIN_PHONE_DIGITS = 8;
 const MAX_MESSAGE_LENGTH = 500;
@@ -58,16 +61,32 @@ const COUNTRY_CODES = [
   ["33", "Francia"],
 ];
 
-const DEFAULT_MESSAGE = "Hola, me interesa este producto: {producto} - {url}";
+// Las mismas plantillas recomendadas viven en los bloques Liquid de la extensión
+const DEFAULT_MESSAGE =
+  "Hola, me interesa este producto:\n{producto} - {precio}\nCantidad: {cantidad}\n{url}";
+const DEFAULT_CART_MESSAGE =
+  "Hola, quiero hacer este pedido:\n{pedido}\nTotal: {total}\n{url}";
+
+const PRODUCT_PLACEHOLDERS = ["producto", "precio", "cantidad", "sku", "url"];
+const CART_PLACEHOLDERS = ["pedido", "total", "cantidad", "url"];
 
 // Ejemplo usado para previsualizar el mensaje y probar los números
 const SAMPLE_PRODUCT = "Camiseta Azul (Talla M)";
 const SAMPLE_PRICE = "$12.00";
+const SAMPLE_QUANTITY = "2";
+const SAMPLE_SKU = "CAM-AZ-M";
 const SAMPLE_URL = "https://tu-tienda.com/products/camiseta-azul";
+const SAMPLE_CART = {
+  pedido: "- 2× Camiseta Azul (Talla M) — $24.00\n- 1× Gorra Negra — $15.00",
+  total: "$39.00",
+  cantidad: "3",
+  url: "https://tu-tienda.com/cart/123:2,456:1",
+};
 
 // Nombres de archivo de los bloques en extensions/whatsapp-button/blocks/
 const PRODUCT_BLOCK_HANDLE = "whatsapp_button";
 const FLOAT_BLOCK_HANDLE = "whatsapp_float";
+const CART_BLOCK_HANDLE = "whatsapp_cart";
 
 // Lunes primero, como se lee un horario en LATAM. El valor coincide con
 // Date.getDay() en JavaScript (0 = domingo), que es lo que usa el storefront.
@@ -151,6 +170,22 @@ const toWeight = (value) => {
   return Math.min(Math.max(weight, MIN_WEIGHT), MAX_WEIGHT);
 };
 
+// Etiquetas de producto que atiende un vendedor (vacío = todos los productos).
+// Acepta un array o texto separado por comas; normaliza a minúsculas sin repetir.
+const toTags = (value) => {
+  const list = Array.isArray(value) ? value : String(value ?? "").split(",");
+  const seen = new Set();
+  const tags = [];
+  for (const raw of list) {
+    const tag = String(raw ?? "").trim().toLowerCase().slice(0, MAX_TAG_LENGTH);
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+    if (tags.length >= MAX_TAGS) break;
+  }
+  return tags;
+};
+
 // Normaliza un vendedor venido de la API (campos ausentes = valores por defecto)
 const toVendor = (v) => ({
   name: String(v?.name ?? ""),
@@ -158,6 +193,7 @@ const toVendor = (v) => ({
   active: v?.active !== false,
   weight: toWeight(v?.weight),
   hours: toHours(v?.hours),
+  tags: toTags(v?.tags),
 });
 
 // Contador módulo-level: garantiza ids de fila únicos y estables para React.
@@ -177,15 +213,18 @@ const makeRows = (list) =>
         start: hours ? hours.start : DEFAULT_START,
         end: hours ? hours.end : DEFAULT_END,
         days: hours ? hours.days : WEEKDAYS_ONLY,
+        tags: toTags(v.tags).join(", "),
         // Solo interfaz: las opciones avanzadas se muestran abiertas cuando
         // el vendedor ya tiene algo configurado en ellas
-        expanded: Boolean(hours) || toWeight(v.weight) !== 1,
+        expanded:
+          Boolean(hours) || toWeight(v.weight) !== 1 || toTags(v.tags).length > 0,
         saved: JSON.stringify([
           v.name ?? "",
           v.phone ?? "",
           v.active !== false,
           toWeight(v.weight),
           hours,
+          toTags(v.tags),
         ]),
       };
     },
@@ -201,13 +240,17 @@ const rowSignature = (row) =>
     row.scheduled
       ? toHours({ start: row.start, end: row.end, days: row.days })
       : null,
+    toTags(row.tags),
   ]);
 
 const isRowDirty = (row) => rowSignature(row) !== row.saved;
 
 // ¿Este vendedor se aleja de la configuración recomendada?
 const isRowCustomized = (row) =>
-  !row.active || toWeight(row.weight) !== 1 || row.scheduled;
+  !row.active ||
+  toWeight(row.weight) !== 1 ||
+  row.scheduled ||
+  toTags(row.tags).length > 0;
 
 // Vuelve a lo recomendado sin tocar nombre ni número
 const resetRowConfig = (row) => ({
@@ -218,6 +261,7 @@ const resetRowConfig = (row) => ({
   start: DEFAULT_START,
   end: DEFAULT_END,
   days: WEEKDAYS_ONLY,
+  tags: "",
 });
 
 const moveItem = (list, from, to) => {
@@ -256,6 +300,7 @@ const savedSignature = (saved) =>
         v.active,
         toWeight(v.weight),
         toHours(v.hours),
+        toTags(v.tags),
       ]),
     ),
   );
@@ -448,6 +493,7 @@ const themeEditorLinks = (shop) => {
   const editor = `https://${shop}/admin/themes/current/editor`;
   return {
     addProductBlock: `${editor}?template=product&addAppBlockId=${apiKey}/${PRODUCT_BLOCK_HANDLE}&target=mainSection`,
+    addCartBlock: `${editor}?template=cart&addAppBlockId=${apiKey}/${CART_BLOCK_HANDLE}&target=mainSection`,
     activateFloat: `${editor}?context=apps&activateAppId=${apiKey}/${FLOAT_BLOCK_HANDLE}`,
   };
 };
@@ -512,8 +558,8 @@ const detectInstallation = async (admin) => {
               name
               role
               files(
-                filenames: ["templates/product.json", "config/settings_data.json"]
-                first: 2
+                filenames: ["templates/product.json", "templates/cart.json", "config/settings_data.json"]
+                first: 3
               ) {
                 nodes {
                   filename
@@ -531,7 +577,12 @@ const detectInstallation = async (admin) => {
     const themes = (await response.json()).data?.themes?.nodes;
     if (!Array.isArray(themes) || themes.length === 0) return null;
 
-    const status = { productBlock: null, floatEmbed: null, mainTheme: null };
+    const status = {
+      productBlock: null,
+      cartBlock: null,
+      floatEmbed: null,
+      mainTheme: null,
+    };
     // El tema publicado manda; los de desarrollo solo si el publicado no lo tiene
     const ordered = [...themes].sort((a) => (a.role === "MAIN" ? -1 : 1));
 
@@ -541,6 +592,7 @@ const detectInstallation = async (admin) => {
         (theme.files?.nodes ?? []).map((f) => [f.filename, f.body?.content ?? ""]),
       );
       const productJson = parseThemeJson(files["templates/product.json"]);
+      const cartJson = parseThemeJson(files["templates/cart.json"]);
       const settingsJson = parseThemeJson(files["config/settings_data.json"]);
 
       if (
@@ -548,6 +600,9 @@ const detectInstallation = async (admin) => {
         hasEnabledAppBlock(productJson, PRODUCT_BLOCK_HANDLE)
       ) {
         status.productBlock = { theme: theme.name, published: theme.role === "MAIN" };
+      }
+      if (!status.cartBlock && hasEnabledAppBlock(cartJson, CART_BLOCK_HANDLE)) {
+        status.cartBlock = { theme: theme.name, published: theme.role === "MAIN" };
       }
       if (
         !status.floatEmbed &&
@@ -585,6 +640,9 @@ export const loader = async ({ request }) => {
             message: metafield(namespace: $namespace, key: "message") {
               value
             }
+            cartMessage: metafield(namespace: $namespace, key: "cart_message") {
+              value
+            }
           }
         }`,
       { variables: { namespace: METAFIELD_NAMESPACE } },
@@ -603,6 +661,7 @@ export const loader = async ({ request }) => {
     shop: session.shop,
     vendors: Array.isArray(storedVendors) ? storedVendors.map(toVendor) : [],
     message: installation?.message?.value || DEFAULT_MESSAGE,
+    cartMessage: installation?.cartMessage?.value || DEFAULT_CART_MESSAGE,
     stats,
     timeZone,
     currencyCode,
@@ -633,6 +692,7 @@ export const action = async ({ request }) => {
       active: v?.active !== false,
       weight: toWeight(v?.weight),
       hours: toHours(v?.hours),
+      tags: toTags(v?.tags),
     }))
     .filter((v) => {
       if (!v.name || v.phone.length < MIN_PHONE_DIGITS) return false;
@@ -645,6 +705,10 @@ export const action = async ({ request }) => {
     String(payload?.message ?? "")
       .trim()
       .slice(0, MAX_MESSAGE_LENGTH) || DEFAULT_MESSAGE;
+  const cleanCartMessage =
+    String(payload?.cartMessage ?? "")
+      .trim()
+      .slice(0, MAX_MESSAGE_LENGTH) || DEFAULT_CART_MESSAGE;
 
   const installResponse = await admin.graphql(
     `#graphql
@@ -694,6 +758,13 @@ export const action = async ({ request }) => {
             type: "multi_line_text_field",
             value: cleanMessage,
           },
+          {
+            ownerId: installId,
+            namespace: METAFIELD_NAMESPACE,
+            key: CART_MESSAGE_KEY,
+            type: "multi_line_text_field",
+            value: cleanCartMessage,
+          },
         ],
       },
     },
@@ -706,7 +777,11 @@ export const action = async ({ request }) => {
   return {
     ok: errors.length === 0,
     errors,
-    saved: { vendors: cleanVendors, message: cleanMessage },
+    saved: {
+      vendors: cleanVendors,
+      message: cleanMessage,
+      cartMessage: cleanCartMessage,
+    },
   };
 };
 
@@ -755,9 +830,11 @@ function VendorRow({
   const customized = isRowCustomized(row);
 
   // Resumen de lo configurado cuando las opciones están plegadas
+  const rowTags = toTags(row.tags);
   const summary = [
     toWeight(row.weight) !== 1 ? `Prioridad ${toWeight(row.weight)}×` : null,
     row.scheduled ? describeSchedule(row) : null,
+    rowTags.length > 0 ? `Solo: ${rowTags.join(", ")}` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -932,6 +1009,14 @@ function VendorRow({
                 </s-stack>
               )}
 
+              <s-text-field
+                label="Solo atiende productos con estas etiquetas"
+                placeholder="Ej: electrónica, mayoreo"
+                details="Separadas por coma. Vacío = atiende todos los productos. Si un producto lleva la etiqueta de un especialista, solo él recibe ese clic."
+                value={row.tags}
+                onInput={(e) => onChange(row.id, "tags", e.currentTarget.value)}
+              ></s-text-field>
+
               {customized && (
                 <s-stack direction="inline" gap="base">
                   <s-button
@@ -1057,7 +1142,25 @@ function SetupGuide({
         </s-stack>
 
         <s-stack direction="inline" gap="base" alignItems="center">
-          <s-badge tone="info">4</s-badge>
+          <s-badge tone={install?.cartBlock ? "success" : "info"}>4</s-badge>
+          <s-text>
+            Opcional: botón de pedido en la página del carrito (envía todos los
+            productos de una vez).
+          </s-text>
+          {placement(install?.cartBlock)}
+          {links && !install?.cartBlock && (
+            <s-button
+              variant="secondary"
+              href={links.addCartBlock}
+              target="_blank"
+            >
+              Abrir el editor con el bloque
+            </s-button>
+          )}
+        </s-stack>
+
+        <s-stack direction="inline" gap="base" alignItems="center">
+          <s-badge tone="info">5</s-badge>
           <s-text>Pruébalo en tu tienda como lo vería un cliente.</s-text>
           <s-button variant="tertiary" href={storefront} target="_blank">
             Ver mi tienda
@@ -1261,6 +1364,7 @@ export default function Index() {
     shop,
     vendors: vendorsOnLoad,
     message: messageOnLoad,
+    cartMessage: cartMessageOnLoad,
     stats,
     timeZone,
     currencyCode,
@@ -1277,6 +1381,8 @@ export default function Index() {
   const [savedMessage, setSavedMessage] = useState(messageOnLoad);
   const [rows, setRows] = useState(() => makeRows(vendorsOnLoad));
   const [message, setMessage] = useState(messageOnLoad);
+  const [savedCartMessage, setSavedCartMessage] = useState(cartMessageOnLoad);
+  const [cartMessage, setCartMessage] = useState(cartMessageOnLoad);
 
   // Producto real elegido para la vista previa (null = ejemplo genérico)
   const [previewProduct, setPreviewProduct] = useState(null);
@@ -1328,6 +1434,9 @@ export default function Index() {
     const messageError = !message.trim()
       ? "Escribe el mensaje que recibirá tu vendedor"
       : null;
+    const cartMessageError = !cartMessage.trim()
+      ? "Escribe el mensaje del pedido"
+      : null;
 
     const vendors = filledRows.map((r) => ({
       name: r.name.trim(),
@@ -1337,22 +1446,26 @@ export default function Index() {
       hours: r.scheduled
         ? { start: r.start, end: r.end, days: r.days }
         : null,
+      tags: toTags(r.tags),
     }));
 
     return {
       errors,
       messageError,
+      cartMessageError,
       vendors,
-      hasErrors: errors.size > 0 || Boolean(messageError),
+      hasErrors:
+        errors.size > 0 || Boolean(messageError) || Boolean(cartMessageError),
     };
-  }, [rows, message]);
+  }, [rows, message, cartMessage]);
 
   // "Hay cambios" = lo que se ve en pantalla difiere de lo guardado en Shopify
   const isDirty = useMemo(
     () =>
       visibleSignature(rows) !== savedSignature(saved) ||
-      message.trim() !== savedMessage,
-    [rows, saved, message, savedMessage],
+      message.trim() !== savedMessage ||
+      cartMessage.trim() !== savedCartMessage,
+    [rows, saved, message, savedMessage, cartMessage, savedCartMessage],
   );
 
   const previewMessage = useMemo(
@@ -1360,15 +1473,23 @@ export default function Index() {
       renderMessage(message, {
         producto: previewProduct?.title ?? SAMPLE_PRODUCT,
         precio: previewProduct?.price ?? SAMPLE_PRICE,
+        cantidad: SAMPLE_QUANTITY,
+        sku: previewProduct?.sku ?? SAMPLE_SKU,
         url: previewProduct?.url ?? SAMPLE_URL,
       }),
     [message, previewProduct],
   );
 
+  const previewCartMessage = useMemo(
+    () => renderMessage(cartMessage, SAMPLE_CART),
+    [cartMessage],
+  );
+
   // ¿Algo se aleja de la configuración recomendada? (solo filas con contenido)
   const isCustomized =
     rows.some((r) => (r.name.trim() || r.phone.trim()) && isRowCustomized(r)) ||
-    message.trim() !== DEFAULT_MESSAGE;
+    message.trim() !== DEFAULT_MESSAGE ||
+    cartMessage.trim() !== DEFAULT_CART_MESSAGE;
 
   // Reparto teórico entre los activos, según la prioridad de cada uno
   const totalWeight = rows
@@ -1394,11 +1515,17 @@ export default function Index() {
   useEffect(() => {
     if (!fetcher.data) return;
     if (fetcher.data.ok) {
-      const { vendors, message: savedText } = fetcher.data.saved;
+      const {
+        vendors,
+        message: savedText,
+        cartMessage: savedCartText,
+      } = fetcher.data.saved;
       setSaved(vendors);
       setRows(makeRows(vendors));
       setSavedMessage(savedText);
       setMessage(savedText);
+      setSavedCartMessage(savedCartText);
+      setCartMessage(savedCartText);
       const activos = vendors.filter((v) => v.active).length;
       shopify.toast.show(`Guardado: ${activos} vendedor(es) activo(s)`);
     } else {
@@ -1433,6 +1560,7 @@ export default function Index() {
         payload: JSON.stringify({
           vendors: validation.vendors,
           message: message.trim(),
+          cartMessage: cartMessage.trim(),
         }),
       },
       { method: "POST" },
@@ -1442,18 +1570,26 @@ export default function Index() {
   const handleDiscard = () => {
     setRows(makeRows(saved));
     setMessage(savedMessage);
+    setCartMessage(savedCartMessage);
   };
 
   // Chips "+ {producto}": el comerciante no tiene por qué saber la sintaxis
+  const appendPlaceholder = (current, key) => {
+    const trimmed = current.replace(/\s+$/, "");
+    return `${trimmed}${trimmed ? " " : ""}{${key}}`;
+  };
   const insertPlaceholder = (key) =>
-    setMessage((current) => {
-      const trimmed = current.replace(/\s+$/, "");
-      return `${trimmed}${trimmed ? " " : ""}{${key}}`;
-    });
+    setMessage((current) => appendPlaceholder(current, key));
+  const insertCartPlaceholder = (key) =>
+    setCartMessage((current) => appendPlaceholder(current, key));
 
   // Sin {producto} o {url} el vendedor recibe un mensaje sin contexto
   const missingPlaceholders = ["producto", "url"].filter(
     (key) => !message.includes(`{${key}}`),
+  );
+  // Sin {pedido} el mensaje del carrito no dice qué se está pidiendo
+  const missingCartPlaceholders = ["pedido"].filter(
+    (key) => !cartMessage.includes(`{${key}}`),
   );
 
   const moveRow = (id, delta) =>
@@ -1472,6 +1608,7 @@ export default function Index() {
   const resetAll = () => {
     setRows((current) => current.map(resetRowConfig));
     setMessage(DEFAULT_MESSAGE);
+    setCartMessage(DEFAULT_CART_MESSAGE);
     shopify.toast.show("Configuración recomendada aplicada. Guarda para confirmar.");
   };
 
@@ -1496,6 +1633,7 @@ export default function Index() {
         price: variant?.price
           ? formatPrice(variant.price, currencyCode)
           : SAMPLE_PRICE,
+        sku: variant?.sku || SAMPLE_SKU,
         url: `https://${shop}/products/${product.handle}${hasVariants && variantId ? `?variant=${variantId}` : ""}`,
       });
     } catch {
@@ -1538,8 +1676,8 @@ export default function Index() {
           <s-unordered-list>
             <s-list-item>Todos los vendedores activos</s-list-item>
             <s-list-item>Prioridad normal para todos (reparto por igual)</s-list-item>
-            <s-list-item>Sin horarios: disponibles siempre</s-list-item>
-            <s-list-item>Mensaje recomendado</s-list-item>
+            <s-list-item>Sin horarios ni etiquetas: todos atienden todo</s-list-item>
+            <s-list-item>Mensajes recomendados (producto y carrito)</s-list-item>
           </s-unordered-list>
           <s-text tone="neutral">
             No se guarda nada hasta que pulses Guardar: podrás revisar el
@@ -1645,9 +1783,9 @@ export default function Index() {
       <s-section heading="Mensaje que enviará el cliente">
         <s-paragraph>
           Este es el texto que aparecerá escrito en WhatsApp cuando el cliente
-          pulse el botón. Puedes usar {"{producto}"}, {"{precio}"} y{" "}
-          {"{url}"}: se reemplazan solos por el producto (con su talla o
-          color), su precio y su enlace.
+          pulse el botón de un producto. Se rellenan solos: {"{producto}"} (con
+          su talla o color), {"{precio}"}, {"{cantidad}"} (la que elija el
+          cliente), {"{sku}"} y {"{url}"}.
         </s-paragraph>
 
         {message.trim() && missingPlaceholders.length > 0 && (
@@ -1673,7 +1811,7 @@ export default function Index() {
         ></s-text-area>
 
         <s-stack direction="inline" gap="base" alignItems="center">
-          {["producto", "precio", "url"].map((key) => (
+          {PRODUCT_PLACEHOLDERS.map((key) => (
             <s-button
               key={key}
               variant="tertiary"
@@ -1715,7 +1853,69 @@ export default function Index() {
                 ? "Vista previa con tu producto"
                 : "Vista previa (producto de ejemplo)"}
             </s-text>
-            <s-text>{previewMessage}</s-text>
+            <div style={{ whiteSpace: "pre-wrap" }}>
+              <s-text>{previewMessage}</s-text>
+            </div>
+          </s-stack>
+        </s-box>
+      </s-section>
+
+      <s-section heading="Mensaje para pedidos del carrito">
+        <s-paragraph>
+          Cuando el cliente tiene varios productos en el carrito, el botón de
+          la página del carrito (y el flotante, fuera de las fichas de
+          producto) envía el pedido completo. Se rellenan solos: {"{pedido}"}{" "}
+          (un renglón por artículo con cantidad, variante y precio),{" "}
+          {"{total}"}, {"{cantidad}"} (artículos en total) y {"{url}"} (un
+          enlace que recrea el carrito para el vendedor).
+        </s-paragraph>
+
+        {cartMessage.trim() && missingCartPlaceholders.length > 0 && (
+          <s-banner heading="Tu mensaje no incluye {pedido}" tone="warning">
+            Sin {"{pedido}"} el vendedor no verá qué productos quiere el
+            cliente. Añádelo con el botón de abajo.
+          </s-banner>
+        )}
+
+        <s-text-area
+          label="Plantilla del pedido"
+          rows={4}
+          maxLength={MAX_MESSAGE_LENGTH}
+          value={cartMessage}
+          {...(validation.cartMessageError
+            ? { error: validation.cartMessageError }
+            : {})}
+          onInput={(e) => setCartMessage(e.currentTarget.value)}
+        ></s-text-area>
+
+        <s-stack direction="inline" gap="base" alignItems="center">
+          {CART_PLACEHOLDERS.map((key) => (
+            <s-button
+              key={key}
+              variant="tertiary"
+              onClick={() => insertCartPlaceholder(key)}
+              {...(cartMessage.includes(`{${key}}`) ? { disabled: true } : {})}
+            >
+              {`+ {${key}}`}
+            </s-button>
+          ))}
+          {cartMessage.trim() !== DEFAULT_CART_MESSAGE && (
+            <s-button
+              variant="tertiary"
+              icon="undo"
+              onClick={() => setCartMessage(DEFAULT_CART_MESSAGE)}
+            >
+              Usar mensaje recomendado
+            </s-button>
+          )}
+        </s-stack>
+
+        <s-box padding="base" background="subdued" borderRadius="base">
+          <s-stack direction="block" gap="small-300">
+            <s-text type="strong">Vista previa (carrito de ejemplo)</s-text>
+            <div style={{ whiteSpace: "pre-wrap" }}>
+              <s-text>{previewCartMessage}</s-text>
+            </div>
           </s-stack>
         </s-box>
       </s-section>
@@ -1742,6 +1942,16 @@ export default function Index() {
           <s-list-item>
             Usa &quot;Probar en WhatsApp&quot; para confirmar que el número es
             correcto antes de publicarlo en tu tienda.
+          </s-list-item>
+          <s-list-item>
+            Etiquetas: si un vendedor solo atiende productos con cierta
+            etiqueta (por ejemplo &quot;electrónica&quot;), esos productos van
+            solo a él; el resto va a los vendedores sin etiquetas.
+          </s-list-item>
+          <s-list-item>
+            En la tienda, el botón muestra &quot;En línea&quot; o &quot;Fuera
+            de horario · te respondemos mañana a las 08:00&quot; según los
+            horarios de tus vendedores. Se configura en el editor de temas.
           </s-list-item>
           <s-list-item>
             ¿Te perdiste configurando? &quot;Configuración recomendada&quot;
