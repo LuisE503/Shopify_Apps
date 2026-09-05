@@ -262,7 +262,7 @@ Cantidad: {cantidad}
     },
     {
       "type": "header",
-      "content": "Tamaño"
+      "content": "Tamaño y espaciado"
     },
     {
       "type": "range",
@@ -317,6 +317,26 @@ Cantidad: {cantidad}
       "label": "Ancho completo en celular",
       "info": "Recomendado: en pantallas pequeñas un botón ancho es más fácil de pulsar.",
       "default": true
+    },
+    {
+      "type": "range",
+      "id": "spacing_top",
+      "label": "Espacio arriba",
+      "min": 0,
+      "max": 60,
+      "step": 2,
+      "unit": "px",
+      "default": 12
+    },
+    {
+      "type": "range",
+      "id": "spacing_bottom",
+      "label": "Espacio abajo",
+      "min": 0,
+      "max": 60,
+      "step": 2,
+      "unit": "px",
+      "default": 12
     },
     {
       "type": "header",
@@ -383,30 +403,6 @@ Cantidad: {cantidad}
     },
     {
       "type": "header",
-      "content": "Espaciado"
-    },
-    {
-      "type": "range",
-      "id": "spacing_top",
-      "label": "Espacio arriba",
-      "min": 0,
-      "max": 60,
-      "step": 2,
-      "unit": "px",
-      "default": 12
-    },
-    {
-      "type": "range",
-      "id": "spacing_bottom",
-      "label": "Espacio abajo",
-      "min": 0,
-      "max": 60,
-      "step": 2,
-      "unit": "px",
-      "default": 12
-    },
-    {
-      "type": "header",
       "content": "Productos agotados"
     },
     {
@@ -429,7 +425,7 @@ Cantidad: {cantidad}
     },
     {
       "type": "header",
-      "content": "Botón Añadir al carrito"
+      "content": "Avanzado"
     },
     {
       "type": "checkbox",
@@ -443,10 +439,6 @@ Cantidad: {cantidad}
       "id": "custom_selector",
       "label": "Selector CSS adicional",
       "info": "Opcional. Solo si tu tema usa un botón que no se oculta automáticamente."
-    },
-    {
-      "type": "header",
-      "content": "Avanzado"
     },
     {
       "type": "text",
