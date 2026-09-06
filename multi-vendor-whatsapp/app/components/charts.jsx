@@ -63,27 +63,36 @@ export function BarChart({
 
   return (
     <div className="mvw-chart" style={{ "--mvw-chart-height": `${height}px` }}>
-      <div
-        className="mvw-chart__bars"
-        role="img"
-        aria-label={ariaLabel ?? `${total} ${unit} en ${items.length} periodos`}
-      >
-        {items.map((item) => {
-          const barHeight =
-            item.count > 0 ? Math.max(6, Math.round((item.count / max) * height)) : 2;
-          return (
-            <div
-              key={item.key}
-              className="mvw-chart__col"
-              title={`${item.label}: ${item.count} ${unit}`}
-            >
+      <div className="mvw-chart__plot">
+        <div className="mvw-chart__grid" aria-hidden="true">
+          <span className="mvw-chart__gridline" style={{ bottom: "75%" }} />
+          <span className="mvw-chart__gridline" style={{ bottom: "50%" }} />
+          <span className="mvw-chart__gridline" style={{ bottom: "25%" }} />
+          <span className="mvw-chart__max">{`máx. ${max}`}</span>
+        </div>
+        <div
+          className="mvw-chart__bars"
+          role="img"
+          aria-label={ariaLabel ?? `${total} ${unit} en ${items.length} periodos`}
+        >
+          {items.map((item) => {
+            const barHeight =
+              item.count > 0 ? Math.max(6, Math.round((item.count / max) * height)) : 2;
+            return (
               <div
-                className={`mvw-chart__bar${item.count === 0 ? " mvw-chart__bar--empty" : ""}`}
-                style={{ height: `${barHeight}px` }}
-              />
-            </div>
-          );
-        })}
+                key={item.key}
+                className="mvw-chart__col"
+                data-value={`${item.label}: ${item.count}`}
+                title={`${item.label}: ${item.count} ${unit}`}
+              >
+                <div
+                  className={`mvw-chart__bar${item.count === 0 ? " mvw-chart__bar--empty" : ""}`}
+                  style={{ height: `${barHeight}px` }}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
       <div className="mvw-chart__labels" aria-hidden="true">
         {items.map((item, index) => (

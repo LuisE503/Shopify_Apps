@@ -31,6 +31,7 @@
   border: 1px solid var(--mvw-line);
   border-radius: 12px;
   background: #ffffff;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
 }
 
 .mvw-tile__label {
@@ -81,7 +82,35 @@
   gap: 6px;
 }
 
+/* Espacio arriba para la etiqueta "máx." y el valor al pasar el ratón */
+.mvw-chart__plot {
+  position: relative;
+  margin-top: 26px;
+}
+
+.mvw-chart__grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mvw-chart__gridline {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border-top: 1px dashed #eceef0;
+}
+
+.mvw-chart__max {
+  position: absolute;
+  top: -16px;
+  right: 0;
+  font-size: 11px;
+  color: var(--mvw-muted);
+}
+
 .mvw-chart__bars {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 3px;
@@ -89,11 +118,30 @@
 }
 
 .mvw-chart__col {
+  position: relative;
   display: flex;
   flex: 1;
   align-items: flex-end;
   min-width: 0;
   height: 100%;
+}
+
+/* Valor al pasar el ratón, sin JavaScript */
+.mvw-chart__col[data-value]:hover::after {
+  content: attr(data-value);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  z-index: 1;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: var(--mvw-ink);
+  color: #ffffff;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .mvw-chart__bar {

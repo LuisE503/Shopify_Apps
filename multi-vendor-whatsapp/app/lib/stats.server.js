@@ -4,17 +4,14 @@
  * El Salvador es de ese día (y de esa hora), no del siguiente en UTC.
  */
 import db from "../db.server";
+import { DEFAULT_PERIOD, MAX_RANGE_DAYS, formatDay, parseDay } from "./periods";
 
-export const PERIODS = [7, 30, 90];
-export const DEFAULT_PERIOD = 30;
 const TOP_PRODUCTS = 5;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Al consultar la base de datos se amplía la ventana para cubrir cualquier
+// zona horaria; el filtro exacto se hace después por clave de día
+const TZ_MARGIN_MS = 14 * 60 * 60 * 1000;
 const INTL_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-export const normalizePeriod = (value) => {
-  const days = Number.parseInt(value, 10);
-  return PERIODS.includes(days) ? days : DEFAULT_PERIOD;
-};
 
 /** Fecha "YYYY-MM-DD", hora (0-23) y día de la semana en la zona horaria dada. */
 const partsIn = (date, timeZone) => {
@@ -43,7 +40,10 @@ const partsIn = (date, timeZone) => {
   }
 };
 
-const dayLabel = (date, timeZone) => {
+/** Etiqueta corta ("lun 5") de una clave de día. Se toma el mediodía UTC para
+ * que ninguna zona horaria la desplace al día anterior o siguiente. */
+const labelForKey = (key, timeZone) => {
+  const date = new Date(`${key}T12:00:00Z`);
   try {
     return new Intl.DateTimeFormat("es", {
       timeZone: timeZone ?? undefined,
@@ -51,12 +51,58 @@ const dayLabel = (date, timeZone) => {
       day: "numeric",
     }).format(date);
   } catch {
-    return date.toISOString().slice(5, 10);
+    return key.slice(5);
   }
 };
 
-export const emptyStats = (days = DEFAULT_PERIOD) => ({
-  days,
+/** Etiqueta con mes ("5 sep") para encabezados de rango. */
+export const longLabelForKey = (key) => {
+  const date = new Date(`${key}T12:00:00Z`);
+  try {
+    return new Intl.DateTimeFormat("es", {
+      timeZone: "UTC",
+      day: "numeric",
+      month: "short",
+    }).format(date);
+  } catch {
+    return key;
+  }
+};
+
+const shiftKey = (key, days) => formatDay(new Date(parseDay(key).getTime() + days * DAY_MS));
+
+/** Clave del día de hoy en la zona horaria de la tienda. */
+export const todayKey = (timeZone) => partsIn(new Date(), timeZone).key;
+
+/**
+ * Normaliza lo pedido: un número de días hacia atrás hasta hoy, o un rango
+ * { from, to } explícito. Devuelve siempre un rango válido y acotado.
+ */
+const resolveWindow = (timeZone, rangeOrDays) => {
+  const today = todayKey(timeZone);
+
+  if (rangeOrDays && typeof rangeOrDays === "object") {
+    const from = parseDay(rangeOrDays.from);
+    const to = parseDay(rangeOrDays.to);
+    if (from && to && from <= to) {
+      const toKey = formatDay(to) > today ? today : formatDay(to);
+      const span = Math.min(
+        MAX_RANGE_DAYS,
+        Math.round((parseDay(toKey).getTime() - from.getTime()) / DAY_MS) + 1,
+      );
+      return { from: shiftKey(toKey, -(span - 1)), to: toKey, days: span };
+    }
+  }
+
+  const days =
+    Number.isInteger(rangeOrDays) && rangeOrDays > 0
+      ? Math.min(rangeOrDays, MAX_RANGE_DAYS)
+      : DEFAULT_PERIOD;
+  return { from: shiftKey(today, -(days - 1)), to: today, days };
+};
+
+export const emptyStats = (range) => ({
+  ...range,
   total: 0,
   previousTotal: 0,
   today: 0,
@@ -68,40 +114,55 @@ export const emptyStats = (days = DEFAULT_PERIOD) => ({
 });
 
 /**
- * Clics del periodo: serie diaria, por hora del día, por día de la semana,
+ * Clics del rango: serie diaria, por hora del día, por día de la semana,
  * por vendedor, productos más consultados, y el total del periodo anterior
- * para mostrar la variación.
+ * (misma duración, justo antes) para mostrar la variación.
+ *
+ * @param rangeOrDays  número de días hasta hoy, o { from, to } en "YYYY-MM-DD"
  */
-export const loadClickStats = async (shop, timeZone, days = DEFAULT_PERIOD) => {
-  const since = new Date(Date.now() - days * DAY_MS);
-  const previousSince = new Date(Date.now() - 2 * days * DAY_MS);
+export const loadClickStats = async (shop, timeZone, rangeOrDays = DEFAULT_PERIOD) => {
+  const range = resolveWindow(timeZone, rangeOrDays);
+  const { from, to, days } = range;
+  const previousFrom = shiftKey(from, -days);
+  const previousTo = shiftKey(from, -1);
 
   try {
-    const [clicks, previousTotal] = await Promise.all([
-      db.vendorClick.findMany({
-        where: { shop, createdAt: { gte: since } },
-        select: { createdAt: true, vendorPhone: true, productTitle: true },
-        orderBy: { createdAt: "asc" },
-      }),
-      db.vendorClick.count({
-        where: { shop, createdAt: { gte: previousSince, lt: since } },
-      }),
-    ]);
+    const clicks = await db.vendorClick.findMany({
+      where: {
+        shop,
+        createdAt: {
+          gte: new Date(parseDay(previousFrom).getTime() - TZ_MARGIN_MS),
+          lte: new Date(parseDay(to).getTime() + DAY_MS + TZ_MARGIN_MS),
+        },
+      },
+      select: { createdAt: true, vendorPhone: true, productTitle: true },
+      orderBy: { createdAt: "asc" },
+    });
 
-    const todayKey = partsIn(new Date(), timeZone).key;
+    const today = todayKey(timeZone);
     const countsByDay = new Map();
     const products = new Map();
     const byPhone = {};
     const byHour = Array(24).fill(0);
     const byWeekday = Array(7).fill(0);
-    let today = 0;
+    let total = 0;
+    let previousTotal = 0;
+    let todayCount = 0;
 
     for (const click of clicks) {
       const parts = partsIn(click.createdAt, timeZone);
+
+      if (parts.key >= previousFrom && parts.key <= previousTo) {
+        previousTotal += 1;
+        continue;
+      }
+      if (parts.key < from || parts.key > to) continue;
+
+      total += 1;
       countsByDay.set(parts.key, (countsByDay.get(parts.key) ?? 0) + 1);
       byHour[parts.hour] += 1;
       byWeekday[parts.weekday] += 1;
-      if (parts.key === todayKey) today += 1;
+      if (parts.key === today) todayCount += 1;
 
       // Los clics vienen en orden ascendente: el último visto es el más reciente
       const entry = byPhone[click.vendorPhone] ?? { count: 0, lastClickAt: null };
@@ -115,10 +176,9 @@ export const loadClickStats = async (shop, timeZone, days = DEFAULT_PERIOD) => {
     }
 
     const byDay = [];
-    for (let i = days - 1; i >= 0; i -= 1) {
-      const date = new Date(Date.now() - i * DAY_MS);
-      const key = partsIn(date, timeZone).key;
-      byDay.push({ key, label: dayLabel(date, timeZone), count: countsByDay.get(key) ?? 0 });
+    for (let i = 0; i < days; i += 1) {
+      const key = shiftKey(from, i);
+      byDay.push({ key, label: labelForKey(key, timeZone), count: countsByDay.get(key) ?? 0 });
     }
 
     const topProducts = [...products.entries()]
@@ -127,10 +187,10 @@ export const loadClickStats = async (shop, timeZone, days = DEFAULT_PERIOD) => {
       .map(([title, count]) => ({ title, count }));
 
     return {
-      days,
-      total: clicks.length,
+      ...range,
+      total,
       previousTotal,
-      today,
+      today: todayCount,
       byPhone,
       byDay,
       byHour,
@@ -139,6 +199,6 @@ export const loadClickStats = async (shop, timeZone, days = DEFAULT_PERIOD) => {
     };
   } catch {
     // Las estadísticas son un extra: si fallan, el panel debe seguir abriendo
-    return emptyStats(days);
+    return emptyStats(range);
   }
 };
