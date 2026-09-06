@@ -18,7 +18,14 @@ export const DEFAULT_MESSAGE =
 export const DEFAULT_CART_MESSAGE =
   "Hola, quiero hacer este pedido:\n{pedido}\nTotal: {total}\n{url}";
 
-export const PRODUCT_PLACEHOLDERS = ["producto", "precio", "cantidad", "sku", "url"];
+export const PRODUCT_PLACEHOLDERS = [
+  "producto",
+  "precio",
+  "cantidad",
+  "sku",
+  "pago",
+  "url",
+];
 export const CART_PLACEHOLDERS = ["pedido", "total", "cantidad", "url"];
 
 // Ejemplos para previsualizar mensajes y probar números
@@ -27,6 +34,7 @@ export const SAMPLE_PRICE = "$12.00";
 export const SAMPLE_QUANTITY = "2";
 export const SAMPLE_SKU = "CAM-AZ-M";
 export const SAMPLE_URL = "https://tu-tienda.com/products/camiseta-azul";
+export const SAMPLE_CHECKOUT = "https://tu-tienda.com/cart/40123456789:2";
 export const SAMPLE_CART = {
   pedido: "- 2× Camiseta Azul (Talla M) — $24.00\n- 1× Gorra Negra — $15.00",
   total: "$39.00",

@@ -10,8 +10,9 @@
  *   mode: "product" | "cart" | "generic"
  *   vendors[]: { name, phone, weight, hours, tags }
  *   producto: messageTemplate, productTitle, productUrl, productPrice,
- *             productSku, productTags, productAvailable, variants,
- *             quantitySelector, outOfStockBehavior, outOfStockLabel, defaultLabel
+ *             productSku, productTags, productAvailable, variants, shopUrl,
+ *             defaultVariantId, quantitySelector, outOfStockBehavior,
+ *             outOfStockLabel, defaultLabel
  *   carrito:  cartMessageTemplate, cart (instantánea), shopUrl, currency, locale
  *   genérico: genericMessage, cartAware
  *   availability: { enabled, onlineText, offlineText }
@@ -342,6 +343,7 @@
     var price = config.productPrice || "";
     var sku = config.productSku || "";
     var selected = currentVariant(config);
+    var quantity = currentQuantity(config);
 
     if (selected) {
       label = label + " (" + (selected.data.title || "") + ")";
@@ -350,11 +352,20 @@
       if (selected.data.sku) sku = selected.data.sku;
     }
 
+    // Enlace de pago: /cart/{variante}:{cantidad} deja el producto en el
+    // carrito listo para pagar. El vendedor solo tiene que reenviarlo.
+    var variantId = (selected && selected.id) || config.defaultVariantId;
+    var checkout =
+      config.shopUrl && variantId
+        ? config.shopUrl + "/cart/" + variantId + ":" + quantity
+        : url;
+
     return fillTemplate(config.messageTemplate, {
       producto: label,
       precio: price,
-      cantidad: String(currentQuantity(config)),
+      cantidad: String(quantity),
       sku: sku,
+      pago: checkout,
       url: url,
     });
   }

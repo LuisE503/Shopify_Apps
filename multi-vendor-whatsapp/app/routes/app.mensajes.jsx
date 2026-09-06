@@ -11,6 +11,7 @@ import {
   MAX_MESSAGE_LENGTH,
   PRODUCT_PLACEHOLDERS,
   SAMPLE_CART,
+  SAMPLE_CHECKOUT,
   SAMPLE_PRICE,
   SAMPLE_PRODUCT,
   SAMPLE_QUANTITY,
@@ -174,6 +175,7 @@ export default function Messages() {
         precio: previewProduct?.price ?? SAMPLE_PRICE,
         cantidad: SAMPLE_QUANTITY,
         sku: previewProduct?.sku ?? SAMPLE_SKU,
+        pago: previewProduct?.checkout ?? SAMPLE_CHECKOUT,
         url: previewProduct?.url ?? SAMPLE_URL,
       }),
     [message, previewProduct],
@@ -248,6 +250,9 @@ export default function Messages() {
         title: hasVariants ? `${product.title} (${variant.title})` : product.title,
         price: variant?.price ? formatPrice(variant.price, currencyCode) : SAMPLE_PRICE,
         sku: variant?.sku || SAMPLE_SKU,
+        checkout: variantId
+          ? `https://${shop}/cart/${variantId}:${SAMPLE_QUANTITY}`
+          : SAMPLE_CHECKOUT,
         url: `https://${shop}/products/${product.handle}${hasVariants && variantId ? `?variant=${variantId}` : ""}`,
       });
     } catch {
@@ -276,8 +281,18 @@ export default function Messages() {
           Es el texto que aparece escrito en WhatsApp cuando el cliente pulsa
           el botón de un producto. Se rellenan solos: {"{producto}"} (con su
           talla o color), {"{precio}"}, {"{cantidad}"} (la que elija el
-          cliente), {"{sku}"} y {"{url}"}.
+          cliente), {"{sku}"}, {"{pago}"} y {"{url}"}.
         </s-paragraph>
+
+        {!message.includes("{pago}") && (
+          <s-banner heading="Cobra dentro de tu tienda" tone="info">
+            Añade {"{pago}"} al mensaje y tu vendedor recibirá un enlace que
+            deja ese producto, con su talla y cantidad, listo para pagar. Solo
+            tiene que reenviarlo por el chat: el cliente paga en tu tienda y la
+            venta queda registrada como un pedido normal, con su inventario y
+            sus informes.
+          </s-banner>
+        )}
         <TemplateEditor
           label="Plantilla del mensaje"
           rows={4}

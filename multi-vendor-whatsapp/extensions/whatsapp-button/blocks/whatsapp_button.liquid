@@ -95,11 +95,17 @@ Cantidad: {cantidad}
     {%- assign product_label = product.title | append: ' (' | append: selected_variant.title | append: ')' -%}
     {%- assign product_url = base_product_url | append: '?variant=' | append: selected_variant.id -%}
   {%- endunless -%}
+  {%- comment -%}
+    Enlace de pago: el carrito de Shopify acepta /cart/{variante}:{cantidad},
+    así el vendedor solo reenvía el enlace y el cliente paga sin buscar nada.
+  {%- endcomment -%}
+  {%- assign checkout_url = shop.url | append: '/cart/' | append: selected_variant.id | append: ':1' -%}
   {%- assign whatsapp_message = message_template
     | replace: '{producto}', product_label
     | replace: '{precio}', product_price
     | replace: '{cantidad}', '1'
     | replace: '{sku}', product_sku
+    | replace: '{pago}', checkout_url
     | replace: '{url}', product_url -%}
 
   {%- comment -%}
@@ -166,6 +172,8 @@ Cantidad: {cantidad}
         "productUrl": {{ base_product_url | json }},
         "productPrice": {{ product_price | json }},
         "productSku": {{ product_sku | json }},
+        "shopUrl": {{ shop.url | json }},
+        "defaultVariantId": {{ selected_variant.id | json }},
         "productTags": {{ product.tags | json }},
         "productAvailable": {{ product.available | json }},
         "variants": {{ variants_json }},

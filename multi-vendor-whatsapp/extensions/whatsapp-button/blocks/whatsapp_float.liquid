@@ -65,6 +65,7 @@ Total: {total}
   {%- assign product_price_json = 'null' -%}
   {%- assign product_sku_json = 'null' -%}
   {%- assign product_tags_json = 'null' -%}
+  {%- assign default_variant_json = 'null' -%}
   {%- capture variants_json -%}{}{%- endcapture -%}
   {%- capture cart_json -%}null{%- endcapture -%}
 
@@ -79,6 +80,7 @@ Total: {total}
     {%- capture product_price_json -%}{{ product_price | json }}{%- endcapture -%}
     {%- capture product_sku_json -%}{{ product_sku | json }}{%- endcapture -%}
     {%- capture product_tags_json -%}{{ product.tags | json }}{%- endcapture -%}
+    {%- capture default_variant_json -%}{{ selected_variant.id | json }}{%- endcapture -%}
     {%- capture variants_json -%}
       {
       {%- assign variant_separator = '' -%}
@@ -97,11 +99,13 @@ Total: {total}
       {%- assign product_label = product.title | append: ' (' | append: selected_variant.title | append: ')' -%}
       {%- assign product_url = base_product_url | append: '?variant=' | append: selected_variant.id -%}
     {%- endunless -%}
+    {%- assign checkout_url = shop.url | append: '/cart/' | append: selected_variant.id | append: ':1' -%}
     {%- assign whatsapp_message = message_template
       | replace: '{producto}', product_label
       | replace: '{precio}', product_price
       | replace: '{cantidad}', '1'
       | replace: '{sku}', product_sku
+      | replace: '{pago}', checkout_url
       | replace: '{url}', product_url -%}
 
   {%- elsif block.settings.use_cart and cart.item_count > 0 -%}
@@ -172,6 +176,7 @@ Total: {total}
         "productUrl": {{ product_url_json }},
         "productPrice": {{ product_price_json }},
         "productSku": {{ product_sku_json }},
+        "defaultVariantId": {{ default_variant_json }},
         "productTags": {{ product_tags_json }},
         "variants": {{ variants_json }},
         "hideAddToCart": false,
